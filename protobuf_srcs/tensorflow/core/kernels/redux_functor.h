@@ -57,7 +57,8 @@ struct ReduceOuterDimensions {
     if (1 == outer_dim) {
       // Nothing to do but passing input to output.
       output->template flat<OutputT>() =
-          input.template flat<OutputT>().reshape(output_dims);
+          input.template flat<InputT>().template cast<OutputT>().reshape(
+              output_dims);
       return;
     }
 
@@ -226,12 +227,8 @@ struct ReduceMiddleDimensions {
     if ((1 == inner_dim * outer_dim)) {
       // Nothing to do.
       output->template flat<OutputT>() =
-          input.template flat<OutputT>().reshape(output_dims);
-      return;
-    } else if (1 == inner_dim) {
-      // Equivalent to ReduceOuterDimensions.
-      const ReduceOuterDimensions<InputT, AccumT, OutputT, BinaryFunctor> redux;
-      redux(device, input_dims, input, output);
+          input.template flat<InputT>().template cast<OutputT>().reshape(
+              output_dims);
       return;
     }
 

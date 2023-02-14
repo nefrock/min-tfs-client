@@ -22,13 +22,14 @@ limitations under the License.
 #endif
 #include <fstream>
 #include <utility>
+
 #include "absl/strings/match.h"
-#include "include/json/json.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/io/path.h"
-#include "tensorflow/core/lib/strings/base64.h"
-#include "tensorflow/core/platform/cloud/retrying_utils.h"
+#include "json/json.h"
+#include "tensorflow/core/platform/base64.h"
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/path.h"
+#include "tensorflow/core/platform/retrying_utils.h"
 
 namespace tensorflow {
 
@@ -91,7 +92,7 @@ Status GetEnvironmentVariableFileName(string* filename) {
                                             " is not set or corrupt."));
   }
   *filename = result;
-  return Status::OK();
+  return OkStatus();
 }
 
 /// Returns the well known file produced by command 'gcloud auth login'.
@@ -117,7 +118,7 @@ Status GetWellKnownFileName(string* filename) {
         "Could not find the credentials file in the standard gcloud location.");
   }
   *filename = result;
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -143,18 +144,18 @@ Status GoogleAuthProvider::GetToken(string* t) {
 
   if (now_sec + kExpirationTimeMarginSec < expiration_timestamp_sec_) {
     *t = current_token_;
-    return Status::OK();
+    return OkStatus();
   }
 
   if (GetTokenForTesting().ok()) {
     *t = current_token_;
-    return Status::OK();
+    return OkStatus();
   }
 
   auto token_from_files_status = GetTokenFromFiles();
   if (token_from_files_status.ok()) {
     *t = current_token_;
-    return Status::OK();
+    return OkStatus();
   }
 
   char* no_gce_check_var = std::getenv(kNoGceCheck);
@@ -172,15 +173,22 @@ Status GoogleAuthProvider::GetToken(string* t) {
 
   if (token_from_gce_status.ok()) {
     *t = current_token_;
-    return Status::OK();
+    return OkStatus();
   }
 
-  LOG(WARNING)
-      << "All attempts to get a Google authentication bearer token failed, "
-      << "returning an empty token. Retrieving token from files failed with \""
-      << token_from_files_status.ToString() << "\"."
-      << " Retrieving token from GCE failed with \""
-      << token_from_gce_status.ToString() << "\".";
+  if (skip_gce_check) {
+    LOG(INFO)
+        << "Attempting an empty bearer token since no token was retrieved "
+        << "from files, and GCE metadata check was skipped.";
+  } else {
+    LOG(WARNING)
+        << "All attempts to get a Google authentication bearer token failed, "
+        << "returning an empty token. Retrieving token from files failed with "
+           "\""
+        << token_from_files_status.ToString() << "\"."
+        << " Retrieving token from GCE failed with \""
+        << token_from_gce_status.ToString() << "\".";
+  }
 
   // Public objects can still be accessed with an empty bearer token,
   // so return an empty token instead of failing.
@@ -195,7 +203,7 @@ Status GoogleAuthProvider::GetToken(string* t) {
   }
   current_token_ = "";
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status GoogleAuthProvider::GetTokenFromFiles() {
@@ -223,7 +231,7 @@ Status GoogleAuthProvider::GetTokenFromFiles() {
     return errors::FailedPrecondition(
         "Unexpected content of the JSON credentials file.");
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status GoogleAuthProvider::GetTokenFromGce() {
@@ -239,7 +247,7 @@ Status GoogleAuthProvider::GetTokenFromGce() {
       response, request_timestamp_sec, &current_token_,
       &expiration_timestamp_sec_));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status GoogleAuthProvider::GetTokenForTesting() {
@@ -249,7 +257,7 @@ Status GoogleAuthProvider::GetTokenForTesting() {
   }
   expiration_timestamp_sec_ = UINT64_MAX;
   current_token_ = token;
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

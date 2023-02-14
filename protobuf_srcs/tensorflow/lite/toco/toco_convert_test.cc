@@ -13,6 +13,9 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/toco/toco_convert.h"
+
+#include <string>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "tensorflow/lite/testing/util.h"
@@ -32,20 +35,20 @@ TEST(TocoTest, BadInputFormat) {
   TocoFlags toco_flags;
   ModelFlags model_flags;
 
-  string input;
-  string output;
+  std::string input;
+  std::string output;
 
   EXPECT_DEATH(Convert(input, toco_flags, model_flags, &output).ok(),
                "Unhandled input_format='FILE_FORMAT_UNKNOWN'");
 }
 
-TEST(TocoTest, MissingOuputArrays) {
+TEST(TocoTest, MissingOutputArrays) {
   TocoFlags toco_flags;
   ModelFlags model_flags;
 
   toco_flags.set_input_format(TENSORFLOW_GRAPHDEF);
-  string input;
-  string output;
+  std::string input;
+  std::string output;
 
   EXPECT_DEATH(Convert(input, toco_flags, model_flags, &output).ok(),
                "This model does not define output arrays, so a --output_arrays "
@@ -58,8 +61,8 @@ TEST(TocoTest, BadOutputArray) {
 
   toco_flags.set_input_format(TENSORFLOW_GRAPHDEF);
   model_flags.add_output_arrays("output1");
-  string input;
-  string output;
+  std::string input;
+  std::string output;
 
   EXPECT_DEATH(Convert(input, toco_flags, model_flags, &output).ok(),
                "Specified output array .output1. is not produced by any op "
@@ -72,7 +75,7 @@ TEST(TocoTest, BadOutputFormat) {
 
   toco_flags.set_input_format(TENSORFLOW_GRAPHDEF);
   model_flags.add_output_arrays("output1");
-  string input = R"GraphDef(
+  std::string input = R"GraphDef(
     node {
       name: "output1"
       input: "input1"
@@ -82,7 +85,7 @@ TEST(TocoTest, BadOutputFormat) {
     }
   )GraphDef";
 
-  string output;
+  std::string output;
 
   EXPECT_DEATH(Convert(input, toco_flags, model_flags, &output).ok(),
                "Unhandled output_format='FILE_FORMAT_UNKNOWN'");
@@ -97,7 +100,7 @@ TEST(TocoTest, SimpleFloatModel) {
 
   // Inputs are automatically selected (but that might not be a good idea).
   model_flags.add_output_arrays("output1");
-  string input = R"GraphDef(
+  std::string input = R"GraphDef(
     node {
       name: "input1"
       op: "Placeholder"
@@ -117,7 +120,7 @@ TEST(TocoTest, SimpleFloatModel) {
     }
   )GraphDef";
 
-  string output;
+  std::string output;
   EXPECT_TRUE(Convert(input, toco_flags, model_flags, &output).ok());
   EXPECT_TRUE(!output.empty());
 }
@@ -139,7 +142,7 @@ TEST(TocoTest, TransientStringTensors) {
   indices_1->set_name("indices1");
 
   model_flags.add_output_arrays("output1");
-  string input = R"GraphDef(
+  std::string input = R"GraphDef(
     node {
       name: "input1"
       op: "Placeholder"
@@ -169,7 +172,7 @@ TEST(TocoTest, TransientStringTensors) {
     }
   )GraphDef";
 
-  string output;
+  std::string output;
 
   EXPECT_TRUE(Convert(input, toco_flags, model_flags, &output).ok());
   EXPECT_TRUE(!output.empty());

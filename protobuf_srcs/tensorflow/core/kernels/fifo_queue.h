@@ -31,9 +31,9 @@ limitations under the License.
 
 namespace tensorflow {
 
-class FIFOQueue : public TypedQueue<std::deque<PersistentTensor> > {
+class FIFOQueue : public TypedQueue<std::deque<Tensor> > {
  public:
-  FIFOQueue(int32 capacity, const DataTypeVector& component_dtypes,
+  FIFOQueue(int32_t capacity, const DataTypeVector& component_dtypes,
             const std::vector<TensorShape>& component_shapes,
             const string& name);
 
@@ -59,12 +59,12 @@ class FIFOQueue : public TypedQueue<std::deque<PersistentTensor> > {
 
   // Helper for dequeuing a single element from queues_.
   void DequeueLocked(OpKernelContext* ctx, Tuple* tuple)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_);
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
-  static Status GetElementComponentFromBatch(const Tuple& tuple, int64 index,
+  static Status GetElementComponentFromBatch(const Tuple& tuple, int64_t index,
                                              int component,
                                              OpKernelContext* ctx,
-                                             PersistentTensor* out_element);
+                                             Tensor* out_tensor);
 
  private:
   TF_DISALLOW_COPY_AND_ASSIGN(FIFOQueue);
@@ -80,7 +80,7 @@ class FIFOQueueOp : public TypedQueueOp {
 
  private:
   Status CreateResource(QueueInterface** ret) override
-      EXCLUSIVE_LOCKS_REQUIRED(mu_);
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_);
 
   std::vector<TensorShape> component_shapes_;
   TF_DISALLOW_COPY_AND_ASSIGN(FIFOQueueOp);

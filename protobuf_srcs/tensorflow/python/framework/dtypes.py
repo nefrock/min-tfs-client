@@ -13,77 +13,52 @@
 # limitations under the License.
 # ==============================================================================
 """Library of dtypes (Tensor element types)."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+import abc
+import builtins
+from typing import Type, Sequence, Optional
 
 import numpy as np
-from six.moves import builtins
 
 from tensorflow.core.framework import types_pb2
-from tensorflow.python import pywrap_tensorflow
+# We need to import pywrap_tensorflow prior to the bfloat wrapper to avoid
+# protobuf errors where a file is defined twice on MacOS.
+# pylint: disable=invalid-import-order,g-bad-import-order
+from tensorflow.python import pywrap_tensorflow  # pylint: disable=unused-import
+from tensorflow.python.framework import _dtypes
+from tensorflow.python.types import doc_typealias
+from tensorflow.python.lib.core import _pywrap_bfloat16
 from tensorflow.python.util.tf_export import tf_export
+from tensorflow.python.types import trace
+from tensorflow.core.function import trace_type
 
-_np_bfloat16 = pywrap_tensorflow.TF_bfloat16_type()
+_np_bfloat16 = _pywrap_bfloat16.TF_bfloat16_type()
+
+
+class DTypeMeta(type(_dtypes.DType), abc.ABCMeta):
+  pass
 
 
 @tf_export("dtypes.DType", "DType")
-class DType(object):
+class DType(
+    _dtypes.DType,
+    trace.TraceType,
+    trace_type.Serializable,
+    metaclass=DTypeMeta):
   """Represents the type of the elements in a `Tensor`.
 
-  The following `DType` objects are defined:
+  `DType`'s are used to specify the output data type for operations which
+  require it, or to inspect the data type of existing `Tensor`'s.
 
-  * `tf.float16`: 16-bit half-precision floating-point.
-  * `tf.float32`: 32-bit single-precision floating-point.
-  * `tf.float64`: 64-bit double-precision floating-point.
-  * `tf.bfloat16`: 16-bit truncated floating-point.
-  * `tf.complex64`: 64-bit single-precision complex.
-  * `tf.complex128`: 128-bit double-precision complex.
-  * `tf.int8`: 8-bit signed integer.
-  * `tf.uint8`: 8-bit unsigned integer.
-  * `tf.uint16`: 16-bit unsigned integer.
-  * `tf.uint32`: 32-bit unsigned integer.
-  * `tf.uint64`: 64-bit unsigned integer.
-  * `tf.int16`: 16-bit signed integer.
-  * `tf.int32`: 32-bit signed integer.
-  * `tf.int64`: 64-bit signed integer.
-  * `tf.bool`: Boolean.
-  * `tf.string`: String.
-  * `tf.qint8`: Quantized 8-bit signed integer.
-  * `tf.quint8`: Quantized 8-bit unsigned integer.
-  * `tf.qint16`: Quantized 16-bit signed integer.
-  * `tf.quint16`: Quantized 16-bit unsigned integer.
-  * `tf.qint32`: Quantized 32-bit signed integer.
-  * `tf.resource`: Handle to a mutable resource.
-  * `tf.variant`: Values of arbitrary types.
+  Examples:
 
-  The `tf.as_dtype()` function converts numpy types and string type
-  names to a `DType` object.
+  >>> tf.constant(1, dtype=tf.int64)
+  <tf.Tensor: shape=(), dtype=int64, numpy=1>
+  >>> tf.constant(1.0).dtype
+  tf.float32
+
+  See `tf.dtypes` for a complete list of `DType`'s defined.
   """
-  __slots__ = ["_type_enum"]
-
-  def __init__(self, type_enum):
-    """Creates a new `DataType`.
-
-    NOTE(mrry): In normal circumstances, you should not need to
-    construct a `DataType` object directly. Instead, use the
-    `tf.as_dtype()` function.
-
-    Args:
-      type_enum: A `types_pb2.DataType` enum value.
-
-    Raises:
-      TypeError: If `type_enum` is not a value `types_pb2.DataType`.
-
-    """
-    # TODO(mrry): Make the necessary changes (using __new__) to ensure
-    # that calling this returns one of the interned values.
-    type_enum = int(type_enum)
-    if (type_enum not in types_pb2.DataType.values() or
-        type_enum == types_pb2.DT_INVALID):
-      raise TypeError("type_enum is not a valid types_pb2.DataType: %s" %
-                      type_enum)
-    self._type_enum = type_enum
+  __slots__ = ()
 
   @property
   def _is_ref_dtype(self):
@@ -108,7 +83,7 @@ class DType(object):
 
   @property
   def real_dtype(self):
-    """Returns the dtype correspond to this dtype's real part."""
+    """Returns the `DType` corresponding to this `DType`'s real part."""
     base = self.base_dtype
     if base == complex64:
       return float32
@@ -118,61 +93,9 @@ class DType(object):
       return self
 
   @property
-  def is_numpy_compatible(self):
-    return self._type_enum not in _NUMPY_INCOMPATIBLE
-
-  @property
   def as_numpy_dtype(self):
-    """Returns a `numpy.dtype` based on this `DType`."""
+    """Returns a Python `type` object based on this `DType`."""
     return _TF_TO_NP[self._type_enum]
-
-  @property
-  def as_datatype_enum(self):
-    """Returns a `types_pb2.DataType` enum value based on this `DType`."""
-    return self._type_enum
-
-  @property
-  def is_bool(self):
-    """Returns whether this is a boolean data type."""
-    return self.base_dtype == bool
-
-  @property
-  def is_integer(self):
-    """Returns whether this is a (non-quantized) integer type."""
-    return (self.is_numpy_compatible and not self.is_quantized and
-            np.issubdtype(self.as_numpy_dtype, np.integer))
-
-  @property
-  def is_floating(self):
-    """Returns whether this is a (non-quantized, real) floating point type."""
-    return ((self.is_numpy_compatible and
-             np.issubdtype(self.as_numpy_dtype, np.floating)) or
-            self.base_dtype == bfloat16)
-
-  @property
-  def is_complex(self):
-    """Returns whether this is a complex floating point type."""
-    return self.base_dtype in (complex64, complex128)
-
-  @property
-  def is_quantized(self):
-    """Returns whether this is a quantized data type."""
-    return self.base_dtype in _QUANTIZED_DTYPES_NO_REF
-
-  @property
-  def is_unsigned(self):
-    """Returns whether this type is unsigned.
-
-    Non-numeric, unordered, and quantized types are not considered unsigned, and
-    this function returns `False`.
-
-    Returns:
-      Whether a `DType` is unsigned.
-    """
-    try:
-      return self.min == 0
-    except TypeError:
-      return False
 
   @property
   def min(self):
@@ -184,7 +107,9 @@ class DType(object):
     """
     if (self.is_quantized or
         self.base_dtype in (bool, string, complex64, complex128)):
-      raise TypeError("Cannot find minimum value of %s." % self)
+      raise TypeError(f"Cannot find minimum value of {self} with "
+                      f"{'quantized type' if self.is_quantized else 'type'} "
+                      f"{self.base_dtype}.")
 
     # there is no simple way to get the min value of a dtype, we have to check
     # float and int types separately
@@ -196,7 +121,7 @@ class DType(object):
       except:
         if self.base_dtype == bfloat16:
           return _np_bfloat16(float.fromhex("-0x1.FEp127"))
-        raise TypeError("Cannot find minimum value of %s." % self)
+        raise TypeError(f"Cannot find minimum value of {self}.")
 
   @property
   def max(self):
@@ -208,7 +133,9 @@ class DType(object):
     """
     if (self.is_quantized or
         self.base_dtype in (bool, string, complex64, complex128)):
-      raise TypeError("Cannot find maximum value of %s." % self)
+      raise TypeError(f"Cannot find maximum value of {self} with "
+                      f"{'quantized type' if self.is_quantized else 'type'} "
+                      f"{self.base_dtype}.")
 
     # there is no simple way to get the max value of a dtype, we have to check
     # float and int types separately
@@ -220,7 +147,7 @@ class DType(object):
       except:
         if self.base_dtype == bfloat16:
           return _np_bfloat16(float.fromhex("0x1.FEp127"))
-        raise TypeError("Cannot find maximum value of %s." % self)
+        raise TypeError(f"Cannot find maximum value of {self}.")
 
   @property
   def limits(self, clip_negative=True):
@@ -233,7 +160,11 @@ class DType(object):
         values. Returns
       min, max : tuple Lower and upper intensity limits.
     """
-    min, max = dtype_range[self.as_numpy_dtype]  # pylint: disable=redefined-builtin
+    if self.as_numpy_dtype in dtype_range:
+      min, max = dtype_range[self.as_numpy_dtype]  # pylint: disable=redefined-builtin
+    else:
+      raise ValueError(str(self) + " does not have defined limits.")
+
     if clip_negative:
       min = 0  # pylint: disable=redefined-builtin
     return min, max
@@ -258,6 +189,29 @@ class DType(object):
     return self._type_enum in (other.as_datatype_enum,
                                other.base_dtype.as_datatype_enum)
 
+  def is_subtype_of(self, other: trace.TraceType) -> bool:
+    """See tf.types.experimental.TraceType base class."""
+    return self == other
+
+  def most_specific_common_supertype(
+      self, types: Sequence[trace.TraceType]) -> Optional["DType"]:
+    """See tf.types.experimental.TraceType base class."""
+    return self if all(self == other for other in types) else None
+
+  @classmethod
+  def experimental_type_proto(cls) -> Type[types_pb2.SerializedDType]:
+    """Returns the type of proto associated with DType serialization."""
+    return types_pb2.SerializedDType
+
+  @classmethod
+  def experimental_from_proto(cls, proto: types_pb2.SerializedDType) -> "DType":
+    """Returns a Dtype instance based on the serialized proto."""
+    return DType(proto.datatype)
+
+  def experimental_as_proto(self) -> types_pb2.SerializedDType:
+    """Returns a proto representation of the Dtype instance."""
+    return types_pb2.SerializedDType(datatype=self._type_enum)
+
   def __eq__(self, other):
     """Returns True iff this DType refers to the same type as `other`."""
     if other is None:
@@ -275,30 +229,16 @@ class DType(object):
     """Returns True iff self != other."""
     return not self.__eq__(other)
 
-  @property
-  def name(self):
-    """Returns the string name for this `DType`."""
-    return _TYPE_TO_STRING[self._type_enum]
-
-  def __str__(self):
-    return "<dtype: %r>" % self.name
-
-  def __repr__(self):
-    return "tf." + self.name
-
-  def __hash__(self):
-    return self._type_enum
+  # "If a class that overrides __eq__() needs to retain the implementation
+  #  of __hash__() from a parent class, the interpreter must be told this
+  #  explicitly by setting __hash__ = <ParentClass>.__hash__."
+  # TODO(slebedev): Remove once __eq__ and __ne__ are implemented in C++.
+  __hash__ = _dtypes.DType.__hash__
 
   def __reduce__(self):
     return as_dtype, (self.name,)
 
-  @property
-  def size(self):
-    if (self._type_enum == types_pb2.DT_VARIANT or
-        self._type_enum == types_pb2.DT_RESOURCE):
-      return 1
-    return np.dtype(self.as_numpy_dtype).itemsize
-
+trace_type.register_serializable(DType)
 
 # Define data type range of numpy dtype
 dtype_range = {
@@ -318,59 +258,151 @@ dtype_range = {
 
 # Define standard wrappers for the types_pb2.DataType enum.
 resource = DType(types_pb2.DT_RESOURCE)
+doc_typealias.document(
+    obj=resource,
+    doc="Handle to a mutable, dynamically allocated resource.")
 tf_export("dtypes.resource", "resource").export_constant(__name__, "resource")
+
 variant = DType(types_pb2.DT_VARIANT)
+doc_typealias.document(
+    obj=variant,
+    doc="Data of arbitrary type (known at runtime).")
 tf_export("dtypes.variant", "variant").export_constant(__name__, "variant")
+
+uint8 = DType(types_pb2.DT_UINT8)
+doc_typealias.document(
+    obj=uint8,
+    doc="Unsigned 8-bit (byte) integer.")
+tf_export("dtypes.uint8", "uint8").export_constant(__name__, "uint8")
+
+uint16 = DType(types_pb2.DT_UINT16)
+doc_typealias.document(
+    obj=uint16,
+    doc="Unsigned 16-bit (word) integer.")
+tf_export("dtypes.uint16", "uint16").export_constant(__name__, "uint16")
+
+uint32 = DType(types_pb2.DT_UINT32)
+doc_typealias.document(
+    obj=uint32,
+    doc="Unsigned 32-bit (dword) integer.")
+tf_export("dtypes.uint32", "uint32").export_constant(__name__, "uint32")
+
+uint64 = DType(types_pb2.DT_UINT64)
+doc_typealias.document(
+    obj=uint64,
+    doc="Unsigned 64-bit (qword) integer.")
+tf_export("dtypes.uint64", "uint64").export_constant(__name__, "uint64")
+
+int8 = DType(types_pb2.DT_INT8)
+doc_typealias.document(
+    obj=int8,
+    doc="Signed 8-bit integer.")
+tf_export("dtypes.int8", "int8").export_constant(__name__, "int8")
+
+int16 = DType(types_pb2.DT_INT16)
+doc_typealias.document(
+    obj=int16,
+    doc="Signed 16-bit integer.")
+tf_export("dtypes.int16", "int16").export_constant(__name__, "int16")
+
+int32 = DType(types_pb2.DT_INT32)
+doc_typealias.document(
+    obj=int32,
+    doc="Signed 32-bit integer.")
+tf_export("dtypes.int32", "int32").export_constant(__name__, "int32")
+
+int64 = DType(types_pb2.DT_INT64)
+doc_typealias.document(
+    obj=int64,
+    doc="Signed 64-bit integer.")
+tf_export("dtypes.int64", "int64").export_constant(__name__, "int64")
+
 float16 = DType(types_pb2.DT_HALF)
-tf_export("dtypes.float16", "float16").export_constant(__name__, "float16")
 half = float16
+doc_typealias.document(
+    obj=float16,
+    doc="16-bit (half precision) floating-point.")
+tf_export("dtypes.float16", "float16").export_constant(__name__, "float16")
 tf_export("dtypes.half", "half").export_constant(__name__, "half")
+
 float32 = DType(types_pb2.DT_FLOAT)
+doc_typealias.document(
+    obj=float32,
+    doc="32-bit (single precision) floating-point.")
 tf_export("dtypes.float32", "float32").export_constant(__name__, "float32")
+
 float64 = DType(types_pb2.DT_DOUBLE)
+doc_typealias.document(
+    obj=float64,
+    doc="64-bit (double precision) floating-point.")
 tf_export("dtypes.float64", "float64").export_constant(__name__, "float64")
 double = float64
 tf_export("dtypes.double", "double").export_constant(__name__, "double")
-int32 = DType(types_pb2.DT_INT32)
-tf_export("dtypes.int32", "int32").export_constant(__name__, "int32")
-uint8 = DType(types_pb2.DT_UINT8)
-tf_export("dtypes.uint8", "uint8").export_constant(__name__, "uint8")
-uint16 = DType(types_pb2.DT_UINT16)
-tf_export("dtypes.uint16", "uint16").export_constant(__name__, "uint16")
-uint32 = DType(types_pb2.DT_UINT32)
-tf_export("dtypes.uint32", "uint32").export_constant(__name__, "uint32")
-uint64 = DType(types_pb2.DT_UINT64)
-tf_export("dtypes.uint64", "uint64").export_constant(__name__, "uint64")
-int16 = DType(types_pb2.DT_INT16)
-tf_export("dtypes.int16", "int16").export_constant(__name__, "int16")
-int8 = DType(types_pb2.DT_INT8)
-tf_export("dtypes.int8", "int8").export_constant(__name__, "int8")
-string = DType(types_pb2.DT_STRING)
-tf_export("dtypes.string", "string").export_constant(__name__, "string")
+
 complex64 = DType(types_pb2.DT_COMPLEX64)
+doc_typealias.document(
+    obj=complex64,
+    doc="64-bit complex.")
 tf_export("dtypes.complex64",
           "complex64").export_constant(__name__, "complex64")
+
 complex128 = DType(types_pb2.DT_COMPLEX128)
+doc_typealias.document(
+    obj=complex128,
+    doc="128-bit complex.")
 tf_export("dtypes.complex128",
           "complex128").export_constant(__name__, "complex128")
-int64 = DType(types_pb2.DT_INT64)
-tf_export("dtypes.int64", "int64").export_constant(__name__, "int64")
+
+string = DType(types_pb2.DT_STRING)
+doc_typealias.document(
+    obj=string,
+    doc="Variable-length string, represented as byte array.")
+tf_export("dtypes.string", "string").export_constant(__name__, "string")
+
 bool = DType(types_pb2.DT_BOOL)  # pylint: disable=redefined-builtin
+doc_typealias.document(
+    obj=bool,
+    doc="Boolean.")
 tf_export("dtypes.bool", "bool").export_constant(__name__, "bool")
+
 qint8 = DType(types_pb2.DT_QINT8)
+doc_typealias.document(
+    obj=qint8,
+    doc="Signed quantized 8-bit integer.")
 tf_export("dtypes.qint8", "qint8").export_constant(__name__, "qint8")
-quint8 = DType(types_pb2.DT_QUINT8)
-tf_export("dtypes.quint8", "quint8").export_constant(__name__, "quint8")
+
 qint16 = DType(types_pb2.DT_QINT16)
+doc_typealias.document(
+    obj=qint16,
+    doc="Signed quantized 16-bit integer.")
 tf_export("dtypes.qint16", "qint16").export_constant(__name__, "qint16")
-quint16 = DType(types_pb2.DT_QUINT16)
-tf_export("dtypes.quint16", "quint16").export_constant(__name__, "quint16")
+
 qint32 = DType(types_pb2.DT_QINT32)
+doc_typealias.document(
+    obj=qint32,
+    doc="signed quantized 32-bit integer.")
 tf_export("dtypes.qint32", "qint32").export_constant(__name__, "qint32")
+
+quint8 = DType(types_pb2.DT_QUINT8)
+doc_typealias.document(
+    obj=quint8,
+    doc="Unsigned quantized 8-bit integer.")
+tf_export("dtypes.quint8", "quint8").export_constant(__name__, "quint8")
+
+quint16 = DType(types_pb2.DT_QUINT16)
+doc_typealias.document(
+    obj=quint16,
+    doc="Unsigned quantized 16-bit integer.")
+tf_export("dtypes.quint16", "quint16").export_constant(__name__, "quint16")
+
+bfloat16 = DType(types_pb2.DT_BFLOAT16)
+doc_typealias.document(
+    obj=bfloat16,
+    doc="16-bit bfloat (brain floating point).")
+tf_export("dtypes.bfloat16", "bfloat16").export_constant(__name__, "bfloat16")
+
 resource_ref = DType(types_pb2.DT_RESOURCE_REF)
 variant_ref = DType(types_pb2.DT_VARIANT_REF)
-bfloat16 = DType(types_pb2.DT_BFLOAT16)
-tf_export("dtypes.bfloat16", "bfloat16").export_constant(__name__, "bfloat16")
 float16_ref = DType(types_pb2.DT_HALF_REF)
 half_ref = float16_ref
 float32_ref = DType(types_pb2.DT_FLOAT_REF)
@@ -394,11 +426,6 @@ qint16_ref = DType(types_pb2.DT_QINT16_REF)
 quint16_ref = DType(types_pb2.DT_QUINT16_REF)
 qint32_ref = DType(types_pb2.DT_QINT32_REF)
 bfloat16_ref = DType(types_pb2.DT_BFLOAT16_REF)
-
-_NUMPY_INCOMPATIBLE = frozenset([
-    types_pb2.DT_VARIANT, types_pb2.DT_VARIANT_REF, types_pb2.DT_RESOURCE,
-    types_pb2.DT_RESOURCE_REF
-])
 
 # Maintain an intern table so that we don't have to create a large
 # number of small objects.
@@ -544,8 +571,8 @@ _NP_TO_TF = {
     np.complex64: complex64,
     np.complex128: complex128,
     np.object_: string,
-    np.string_: string,
-    np.unicode_: string,
+    np.bytes_: string,
+    np.str_: string,
     np.bool_: bool,
     _np_qint8: qint8,
     _np_quint8: quint8,
@@ -568,11 +595,9 @@ for pdt in [
 ]:
   if pdt not in _NP_TO_TF:
     _NP_TO_TF[pdt] = next(
-        _NP_TO_TF[dt] for dt in _NP_TO_TF if dt == pdt().dtype)
-
+        _NP_TO_TF[dt] for dt in _NP_TO_TF if dt == pdt().dtype)  # pylint: disable=no-value-for-parameter
 
 TF_VALUE_DTYPES = set(_NP_TO_TF.values())
-
 
 _TF_TO_NP = {
     types_pb2.DT_HALF:
@@ -595,10 +620,10 @@ _TF_TO_NP = {
         np.int16,
     types_pb2.DT_INT8:
         np.int8,
-    # NOTE(touts): For strings we use np.object as it supports variable length
+    # NOTE(touts): For strings we use object as it supports variable length
     # strings.
     types_pb2.DT_STRING:
-        np.object,
+        object,
     types_pb2.DT_COMPLEX64:
         np.complex64,
     types_pb2.DT_COMPLEX128:
@@ -606,7 +631,7 @@ _TF_TO_NP = {
     types_pb2.DT_INT64:
         np.int64,
     types_pb2.DT_BOOL:
-        np.bool,
+        np.bool_,
     types_pb2.DT_QINT8:
         _np_qint8,
     types_pb2.DT_QUINT8:
@@ -640,7 +665,7 @@ _TF_TO_NP = {
     types_pb2.DT_INT8_REF:
         np.int8,
     types_pb2.DT_STRING_REF:
-        np.object,
+        np.object_,
     types_pb2.DT_COMPLEX64_REF:
         np.complex64,
     types_pb2.DT_COMPLEX128_REF:
@@ -650,7 +675,7 @@ _TF_TO_NP = {
     types_pb2.DT_UINT64_REF:
         np.uint64,
     types_pb2.DT_BOOL_REF:
-        np.bool,
+        np.bool_,
     types_pb2.DT_QINT8_REF:
         _np_qint8,
     types_pb2.DT_QUINT8_REF:
@@ -695,11 +720,14 @@ assert len(_ANY_TO_TF) == sum(
 def as_dtype(type_value):
   """Converts the given `type_value` to a `DType`.
 
+  Note: `DType` values are interned. When passed a new `DType` object,
+  `as_dtype` always returns the interned value.
+
   Args:
     type_value: A value that can be converted to a `tf.DType` object. This may
       currently be a `tf.DType` object, a [`DataType`
       enum](https://www.tensorflow.org/code/tensorflow/core/framework/types.proto),
-        a string type name, or a `numpy.dtype`.
+        a string type name, or a [`numpy.dtype`](https://numpy.org/doc/stable/reference/generated/numpy.dtype.html).
 
   Returns:
     A `DType` corresponding to `type_value`.
@@ -708,7 +736,7 @@ def as_dtype(type_value):
     TypeError: If `type_value` cannot be converted to a `DType`.
   """
   if isinstance(type_value, DType):
-    return type_value
+    return _INTERN_TABLE[type_value.as_datatype_enum]
 
   if isinstance(type_value, np.dtype):
     try:
@@ -718,8 +746,18 @@ def as_dtype(type_value):
 
   try:
     return _ANY_TO_TF[type_value]
-  except KeyError:
+  except (KeyError, TypeError):
+    # TypeError indicates that type_value is not hashable.
     pass
 
-  raise TypeError("Cannot convert value %r to a TensorFlow DType." %
-                  (type_value,))
+  if hasattr(type_value, "dtype"):
+    try:
+      return _NP_TO_TF[np.dtype(type_value.dtype).type]
+    except (KeyError, TypeError):
+      pass
+
+  if isinstance(type_value, _dtypes.DType):
+    return _INTERN_TABLE[type_value.as_datatype_enum]
+
+  raise TypeError(f"Cannot convert the argument `type_value`: {type_value!r} "
+                  "to a TensorFlow DType.")

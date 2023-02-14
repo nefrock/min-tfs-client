@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Debugger wrapper session that dumps debug data to file:// URLs."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import os
 import threading
 import time
@@ -90,7 +86,7 @@ class DumpingDebugWrapperSession(framework.NonInteractiveDebugWrapperSession):
     self._run_counter_lock = threading.Lock()
 
   def prepare_run_debug_urls(self, fetches, feed_dict):
-    """Implementation of abstrat method in superclass.
+    """Implementation of abstract method in superclass.
 
     See doc of `NonInteractiveDebugWrapperSession.prepare_run_debug_urls()`
     for details. This implementation creates a run-specific subdirectory under

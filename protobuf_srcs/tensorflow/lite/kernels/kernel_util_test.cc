@@ -14,14 +14,41 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/kernels/kernel_util.h"
 
+#include <math.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include <initializer_list>
+#include <vector>
+
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include "absl/strings/match.h"
+#include "tensorflow/lite/c/builtin_op_data.h"
+#include "tensorflow/lite/c/common.h"
 #include "tensorflow/lite/testing/util.h"
 
 namespace tflite {
 namespace {
+using ::testing::ElementsAre;
 
-void ReportError(TfLiteContext* context, const char* format, ...) {}
+struct TestContext : public TfLiteContext {
+  string error;
+};
+
+void ReportError(TfLiteContext* context, const char* format, ...) {
+  TestContext* c = static_cast<TestContext*>(context);
+  const size_t kBufferSize = 1024;
+  char temp_buffer[kBufferSize];
+
+  va_list args;
+  va_start(args, format);
+  vsnprintf(temp_buffer, kBufferSize, format, args);
+  va_end(args);
+
+  c->error = temp_buffer;
+}
 
 class KernelUtilTest : public ::testing::Test {
  public:
@@ -30,14 +57,18 @@ class KernelUtilTest : public ::testing::Test {
 
     memset(&tensor1_, 0, sizeof(TfLiteTensor));
     memset(&tensor2_, 0, sizeof(TfLiteTensor));
+    memset(&tensor3_, 0, sizeof(TfLiteTensor));
     tensor1_.dims = nullptr;
     tensor2_.dims = nullptr;
+    tensor3_.dims = nullptr;
     tensor1_.allocation_type = kTfLiteMmapRo;
     tensor2_.allocation_type = kTfLiteMmapRo;
+    tensor3_.allocation_type = kTfLiteMmapRo;
   }
   ~KernelUtilTest() override {
     TfLiteTensorFree(&tensor1_);
     TfLiteTensorFree(&tensor2_);
+    TfLiteTensorFree(&tensor3_);
   }
 
   void SetShape(TfLiteTensor* tensor, std::initializer_list<int> dims) {
@@ -59,9 +90,10 @@ class KernelUtilTest : public ::testing::Test {
   }
 
  protected:
-  TfLiteContext context_;
+  TestContext context_;
   TfLiteTensor tensor1_;
   TfLiteTensor tensor2_;
+  TfLiteTensor tensor3_;
 };
 
 TEST_F(KernelUtilTest, SameShapeEmpty) {
@@ -93,6 +125,19 @@ TEST_F(KernelUtilTest, BroadcastShapeIncompatibleDim) {
   EXPECT_NE(kTfLiteOk, CalculateShapeForBroadcast(&context_, &tensor1_,
                                                   &tensor2_, &output));
   EXPECT_EQ(output, nullptr);
+  EXPECT_EQ(context_.error,
+            "Given shapes, [1,2] and [1,3], are not broadcastable.");
+}
+
+TEST_F(KernelUtilTest, BroadcastShapeIncompatibleDimWithZero) {
+  TfLiteIntArray* output = nullptr;
+  SetShape(&tensor1_, {1, 0});
+  SetShape(&tensor2_, {1, 3});
+  EXPECT_NE(kTfLiteOk, CalculateShapeForBroadcast(&context_, &tensor1_,
+                                                  &tensor2_, &output));
+  EXPECT_EQ(output, nullptr);
+  EXPECT_EQ(context_.error,
+            "Given shapes, [1,0] and [1,3], are not broadcastable.");
 }
 
 TEST_F(KernelUtilTest, BroadcastShapeOnes) {
@@ -116,14 +161,14 @@ TEST_F(KernelUtilTest, BroadcastShapeScalars) {
   SetShape(&tensor2_, {});
   EXPECT_EQ(kTfLiteOk, CalculateShapeForBroadcast(&context_, &tensor1_,
                                                   &tensor2_, &output));
-  EXPECT_THAT(GetShape(output), ::testing::ElementsAre(1, 2));
+  EXPECT_THAT(GetShape(output), ElementsAre(1, 2));
   TfLiteIntArrayFree(output);
 
   SetShape(&tensor1_, {});
   SetShape(&tensor2_, {2});
   EXPECT_EQ(kTfLiteOk, CalculateShapeForBroadcast(&context_, &tensor1_,
                                                   &tensor2_, &output));
-  EXPECT_THAT(GetShape(output), ::testing::ElementsAre(2));
+  EXPECT_THAT(GetShape(output), ElementsAre(2));
   TfLiteIntArrayFree(output);
 }
 
@@ -133,20 +178,186 @@ TEST_F(KernelUtilTest, BroadcastShapeDifferentSizes) {
   SetShape(&tensor2_, {3, 1, 1});
   EXPECT_EQ(kTfLiteOk, CalculateShapeForBroadcast(&context_, &tensor1_,
                                                   &tensor2_, &output));
-  EXPECT_THAT(GetShape(output), ::testing::ElementsAre(3, 1, 2));
+  EXPECT_THAT(GetShape(output), ElementsAre(3, 1, 2));
   TfLiteIntArrayFree(output);
 
   SetShape(&tensor1_, {1, 2, 3, 4});
   SetShape(&tensor2_, {1, 3, 1});
   EXPECT_EQ(kTfLiteOk, CalculateShapeForBroadcast(&context_, &tensor1_,
                                                   &tensor2_, &output));
-  EXPECT_THAT(GetShape(output), ::testing::ElementsAre(1, 2, 3, 4));
+  EXPECT_THAT(GetShape(output), ElementsAre(1, 2, 3, 4));
   TfLiteIntArrayFree(output);
+}
+
+TEST_F(KernelUtilTest, BroadcastShapeWithZero) {
+  TfLiteIntArray* output = nullptr;
+  SetShape(&tensor1_, {1, 2});
+  SetShape(&tensor2_, {3, 0, 1});
+  EXPECT_EQ(kTfLiteOk, CalculateShapeForBroadcast(&context_, &tensor1_,
+                                                  &tensor2_, &output));
+  EXPECT_THAT(GetShape(output), ElementsAre(3, 0, 2));
+  TfLiteIntArrayFree(output);
+
+  SetShape(&tensor1_, {2, 1, 0});
+  SetShape(&tensor2_, {1, 3, 1});
+  EXPECT_EQ(kTfLiteOk, CalculateShapeForBroadcast(&context_, &tensor1_,
+                                                  &tensor2_, &output));
+  EXPECT_THAT(GetShape(output), ElementsAre(2, 3, 0));
+  TfLiteIntArrayFree(output);
+}
+
+TEST_F(KernelUtilTest, BroadcastShapeIncompatibleDimOnThreeTensors) {
+  TfLiteIntArray* output = nullptr;
+  SetShape(&tensor1_, {1, 2});
+  SetShape(&tensor2_, {1, 3});
+  SetShape(&tensor3_, {1, 4});
+  EXPECT_NE(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  EXPECT_EQ(output, nullptr);
+  EXPECT_EQ(context_.error,
+            "Given shapes, [1,2], [1,3] and [1,4], are not broadcastable.");
+}
+
+TEST_F(KernelUtilTest, BroadcastShapeIncompatibleDimWithZeroOnThreeTensors) {
+  TfLiteIntArray* output = nullptr;
+  SetShape(&tensor1_, {1, 1});
+  SetShape(&tensor2_, {1, 3});
+  SetShape(&tensor3_, {1, 0});
+  EXPECT_NE(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  EXPECT_EQ(output, nullptr);
+  EXPECT_EQ(context_.error,
+            "Given shapes, [1,1], [1,3] and [1,0], are not broadcastable.");
+}
+
+TEST_F(KernelUtilTest, BroadcastShapeOnesOnThreeTensors) {
+  TfLiteIntArray* output = nullptr;
+  SetShape(&tensor1_, {1, 1});
+  SetShape(&tensor2_, {1, 1});
+  SetShape(&tensor3_, {1, 3});
+  EXPECT_EQ(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  TfLiteIntArrayFree(output);
+
+  SetShape(&tensor1_, {1, 2});
+  SetShape(&tensor2_, {1, 1});
+  SetShape(&tensor3_, {1, 1});
+  EXPECT_EQ(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  TfLiteIntArrayFree(output);
+
+  SetShape(&tensor1_, {1, 1});
+  SetShape(&tensor2_, {1, 4});
+  SetShape(&tensor3_, {1, 1});
+  EXPECT_EQ(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  TfLiteIntArrayFree(output);
+}
+
+TEST_F(KernelUtilTest, BroadcastShapeScalarsOnThreeTensors) {
+  TfLiteIntArray* output = nullptr;
+  SetShape(&tensor1_, {1, 2});
+  SetShape(&tensor2_, {});
+  SetShape(&tensor3_, {});
+  EXPECT_EQ(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  EXPECT_THAT(GetShape(output), ElementsAre(1, 2));
+  TfLiteIntArrayFree(output);
+
+  SetShape(&tensor1_, {});
+  SetShape(&tensor2_, {2});
+  SetShape(&tensor3_, {});
+  EXPECT_EQ(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  EXPECT_THAT(GetShape(output), ElementsAre(2));
+  TfLiteIntArrayFree(output);
+
+  SetShape(&tensor1_, {});
+  SetShape(&tensor2_, {});
+  SetShape(&tensor3_, {3, 2, 1});
+  EXPECT_EQ(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  EXPECT_THAT(GetShape(output), ElementsAre(3, 2, 1));
+  TfLiteIntArrayFree(output);
+}
+
+TEST_F(KernelUtilTest, BroadcastShapeDifferentSizesOnThreeTensors) {
+  TfLiteIntArray* output = nullptr;
+  SetShape(&tensor1_, {1, 2});
+  SetShape(&tensor2_, {3, 1, 1});
+  SetShape(&tensor3_, {3, 1});
+  EXPECT_EQ(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  EXPECT_THAT(GetShape(output), ElementsAre(3, 3, 2));
+  TfLiteIntArrayFree(output);
+
+  SetShape(&tensor1_, {3, 4});
+  SetShape(&tensor2_, {1, 3, 1});
+  SetShape(&tensor3_, {1, 2, 1, 1});
+  EXPECT_EQ(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  EXPECT_THAT(GetShape(output), ElementsAre(1, 2, 3, 4));
+  TfLiteIntArrayFree(output);
+}
+
+TEST_F(KernelUtilTest, BroadcastShapeWithZeroOnThreeTensors) {
+  TfLiteIntArray* output = nullptr;
+  SetShape(&tensor1_, {1, 2});
+  SetShape(&tensor2_, {3, 1, 1});
+  SetShape(&tensor3_, {0, 1});
+  EXPECT_EQ(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  EXPECT_THAT(GetShape(output), ElementsAre(3, 0, 2));
+  TfLiteIntArrayFree(output);
+
+  SetShape(&tensor1_, {1, 4});
+  SetShape(&tensor2_, {1, 0, 1});
+  SetShape(&tensor3_, {1, 2, 1, 1});
+  EXPECT_EQ(kTfLiteOk,
+            CalculateShapeForBroadcast(&context_, &tensor1_, &tensor2_,
+                                       &tensor3_, &output));
+  EXPECT_THAT(GetShape(output), ElementsAre(1, 2, 0, 4));
+  TfLiteIntArrayFree(output);
+}
+
+TEST_F(KernelUtilTest, GetShapeDebugString) {
+  TfLiteIntArray* dims0 = TfLiteIntArrayCreate(0);
+  EXPECT_EQ("[]", GetShapeDebugString(dims0));
+  TfLiteIntArrayFree(dims0);
+
+  TfLiteIntArray* dims1 = TfLiteIntArrayCreate(1);
+  dims1->data[0] = 1;
+  EXPECT_EQ("[1]", GetShapeDebugString(dims1));
+  TfLiteIntArrayFree(dims1);
+
+  TfLiteIntArray* dims2 = TfLiteIntArrayCreate(2);
+  dims2->data[0] = 2;
+  dims2->data[1] = 3;
+  EXPECT_EQ("[2,3]", GetShapeDebugString(dims2));
+  TfLiteIntArrayFree(dims2);
+
+  TfLiteIntArray* dims3 = TfLiteIntArrayCreate(3);
+  dims3->data[0] = 4;
+  dims3->data[1] = 5;
+  dims3->data[2] = 6;
+  EXPECT_EQ("[4,5,6]", GetShapeDebugString(dims3));
+  TfLiteIntArrayFree(dims3);
 }
 
 TEST_F(KernelUtilTest, CheckAndPopulate) {
   // Create input.
-  TfLiteTensor input;
+  TfLiteTensor input = {};
   input.type = kTfLiteInt8;
   input.allocation_type = kTfLiteArenaRw;
   input.dims = TfLiteIntArrayCreate(1);
@@ -163,7 +374,7 @@ TEST_F(KernelUtilTest, CheckAndPopulate) {
   input.quantization.params = reinterpret_cast<void*>(input_params);
 
   // Create filter.
-  TfLiteTensor filter;
+  TfLiteTensor filter = {};
   filter.type = kTfLiteInt8;
   filter.allocation_type = kTfLiteArenaRw;
   filter.dims = TfLiteIntArrayCreate(4);
@@ -188,7 +399,7 @@ TEST_F(KernelUtilTest, CheckAndPopulate) {
   filter.quantization.params = reinterpret_cast<void*>(filter_params);
 
   // Create bias.
-  TfLiteTensor bias;
+  TfLiteTensor bias = {};
   bias.type = kTfLiteInt32;
   bias.allocation_type = kTfLiteArenaRw;
   bias.dims = TfLiteIntArrayCreate(4);
@@ -208,7 +419,7 @@ TEST_F(KernelUtilTest, CheckAndPopulate) {
   bias.quantization.params = reinterpret_cast<void*>(bias_params);
 
   // Create output.
-  TfLiteTensor output;
+  TfLiteTensor output = {};
   output.type = kTfLiteInt8;
   output.allocation_type = kTfLiteArenaRw;
   output.dims = nullptr;
@@ -224,24 +435,23 @@ TEST_F(KernelUtilTest, CheckAndPopulate) {
   output.quantization.params = reinterpret_cast<void*>(output_params);
 
   // Create call parameters.
-  TfLiteContext context;
   int32_t multiplier;
   int shift;
   int32_t output_activation_min;
   int32_t output_activation_max;
   std::vector<int32_t> per_channel_multiplier(3);
-  std::vector<int> per_channel_shift(3);
+  std::vector<int32_t> per_channel_shift(3);
 
   // Call and verify results for per channel case.
   EXPECT_EQ(
       kTfLiteOk,
       PopulateConvolutionQuantizationParams(
-          &context, &input, &filter, &bias, &output, kTfLiteActRelu,
+          &context_, &input, &filter, &bias, &output, kTfLiteActRelu,
           &multiplier, &shift, &output_activation_min, &output_activation_max,
           per_channel_multiplier.data(), per_channel_shift.data()));
   EXPECT_THAT(per_channel_multiplier,
-              ::testing::ElementsAre(1073741824, 1073741824, 1073741824));
-  EXPECT_THAT(per_channel_shift, ::testing::ElementsAre(-1, -2, -1));
+              ElementsAre(1073741824, 1073741824, 1073741824));
+  EXPECT_THAT(per_channel_shift, ElementsAre(-1, -2, -1));
 
   // Release.
   TfLiteTensorFree(&input);
@@ -252,7 +462,7 @@ TEST_F(KernelUtilTest, CheckAndPopulate) {
 
 TEST_F(KernelUtilTest, CheckAndPopulateShift) {
   // Create input of type kTfLiteUInt8.
-  TfLiteTensor input;
+  TfLiteTensor input = {};
   input.type = kTfLiteUInt8;
   input.allocation_type = kTfLiteArenaRw;
   input.dims = TfLiteIntArrayCreate(1);
@@ -269,7 +479,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateShift) {
   input.quantization.params = reinterpret_cast<void*>(input_params);
 
   // Create filter of type kTfLiteUInt8.
-  TfLiteTensor filter;
+  TfLiteTensor filter = {};
   filter.type = kTfLiteUInt8;
   filter.allocation_type = kTfLiteArenaRw;
   filter.dims = TfLiteIntArrayCreate(4);
@@ -291,7 +501,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateShift) {
   filter.quantization.params = reinterpret_cast<void*>(filter_params);
 
   // Create bias for kTfLiteUInt8.
-  TfLiteTensor bias;
+  TfLiteTensor bias = {};
   bias.type = kTfLiteUInt8;
   bias.allocation_type = kTfLiteArenaRw;
   bias.dims = TfLiteIntArrayCreate(4);
@@ -311,7 +521,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateShift) {
   bias.quantization.params = reinterpret_cast<void*>(bias_params);
 
   // Create output for kTfLiteUInt8.
-  TfLiteTensor output;
+  TfLiteTensor output = {};
   output.type = kTfLiteUInt8;
   output.allocation_type = kTfLiteArenaRw;
   output.dims = nullptr;
@@ -327,25 +537,25 @@ TEST_F(KernelUtilTest, CheckAndPopulateShift) {
   output.quantization.params = reinterpret_cast<void*>(output_params);
 
   // Create call parameters.
-  TfLiteContext context;
   int32_t multiplier;
   int shift;
   int32_t output_activation_min;
   int32_t output_activation_max;
-  std::vector<int32_t> per_channel_multiplier(1);
-  std::vector<int> per_channel_shift(1);
+  std::vector<int32_t> per_channel_multiplier(3);
+  std::vector<int> per_channel_shift(3);
 
   // Call and verify results for per channel case.
   EXPECT_EQ(
       kTfLiteOk,
       PopulateConvolutionQuantizationParams(
-          &context, &input, &filter, &bias, &output, kTfLiteActRelu,
+          &context_, &input, &filter, &bias, &output, kTfLiteActRelu,
           &multiplier, &shift, &output_activation_min, &output_activation_max,
-          per_channel_multiplier.data(), per_channel_shift.data()));
-  // Since the filter scale has a size of one i.e number of channels is one in
-  // our TC we expect 1073741824 as output
-  EXPECT_THAT(per_channel_multiplier, ::testing::ElementsAre(1073741824));
-  EXPECT_THAT(per_channel_shift, ::testing::ElementsAre(-1));
+          per_channel_multiplier.data(), per_channel_shift.data(), 3));
+  // Since the filter scale has a size of one but the number of channels is
+  // three, in our TC we expect three 1073741824 as output
+  EXPECT_THAT(per_channel_multiplier,
+              ElementsAre(1073741824, 1073741824, 1073741824));
+  EXPECT_THAT(per_channel_shift, ElementsAre(-1, -1, -1));
   EXPECT_EQ(shift, 1);
   EXPECT_EQ(multiplier, 1073741824);
 
@@ -359,7 +569,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateShift) {
 #ifndef __APPLE__  // Some Apple toolchains don't support std::ldexp
 TEST_F(KernelUtilTest, CheckAndPopulateZeroValue) {
   // Create input.
-  TfLiteTensor input;
+  TfLiteTensor input = {};
   input.type = kTfLiteInt8;
   input.allocation_type = kTfLiteArenaRw;
   input.dims = TfLiteIntArrayCreate(1);
@@ -376,7 +586,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateZeroValue) {
   input.quantization.params = reinterpret_cast<void*>(input_params);
 
   // Create filter.
-  TfLiteTensor filter;
+  TfLiteTensor filter = {};
   filter.type = kTfLiteInt8;
   filter.allocation_type = kTfLiteArenaRw;
   filter.dims = TfLiteIntArrayCreate(4);
@@ -401,7 +611,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateZeroValue) {
   filter.quantization.params = reinterpret_cast<void*>(filter_params);
 
   // Create bias.
-  TfLiteTensor bias;
+  TfLiteTensor bias = {};
   bias.type = kTfLiteInt32;
   bias.allocation_type = kTfLiteArenaRw;
   bias.dims = TfLiteIntArrayCreate(4);
@@ -421,7 +631,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateZeroValue) {
   bias.quantization.params = reinterpret_cast<void*>(bias_params);
 
   // Create output.
-  TfLiteTensor output;
+  TfLiteTensor output = {};
   output.type = kTfLiteInt8;
   output.allocation_type = kTfLiteArenaRw;
   output.dims = nullptr;
@@ -437,7 +647,6 @@ TEST_F(KernelUtilTest, CheckAndPopulateZeroValue) {
   output.quantization.params = reinterpret_cast<void*>(output_params);
 
   // Create call parameters.
-  TfLiteContext context;
   int32_t multiplier;
   int shift;
   int32_t output_activation_min;
@@ -449,12 +658,11 @@ TEST_F(KernelUtilTest, CheckAndPopulateZeroValue) {
   EXPECT_EQ(
       kTfLiteOk,
       PopulateConvolutionQuantizationParams(
-          &context, &input, &filter, &bias, &output, kTfLiteActRelu,
+          &context_, &input, &filter, &bias, &output, kTfLiteActRelu,
           &multiplier, &shift, &output_activation_min, &output_activation_max,
-          per_channel_multiplier.data(), per_channel_shift.data()));
-  EXPECT_THAT(per_channel_multiplier,
-              ::testing::ElementsAre(1073741824, 1073741824, 0));
-  EXPECT_THAT(per_channel_shift, ::testing::ElementsAre(-30, -31, 0));
+          per_channel_multiplier.data(), per_channel_shift.data(), 3));
+  EXPECT_THAT(per_channel_multiplier, ElementsAre(1073741824, 1073741824, 0));
+  EXPECT_THAT(per_channel_shift, ElementsAre(-30, -31, 0));
 
   // Release.
   TfLiteTensorFree(&input);
@@ -466,7 +674,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateZeroValue) {
 
 TEST_F(KernelUtilTest, CheckAndPopulateUint8) {
   // Create input.
-  TfLiteTensor input;
+  TfLiteTensor input = {};
   input.type = kTfLiteUInt8;
   input.allocation_type = kTfLiteArenaRw;
   input.dims = TfLiteIntArrayCreate(1);
@@ -483,7 +691,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateUint8) {
   input.quantization.params = reinterpret_cast<void*>(input_params);
 
   // Create filter.
-  TfLiteTensor filter;
+  TfLiteTensor filter = {};
   filter.type = kTfLiteUInt8;
   filter.allocation_type = kTfLiteArenaRw;
   filter.dims = TfLiteIntArrayCreate(4);
@@ -505,7 +713,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateUint8) {
   filter.quantization.params = reinterpret_cast<void*>(filter_params);
 
   // Create bias.
-  TfLiteTensor bias;
+  TfLiteTensor bias = {};
   bias.type = kTfLiteInt32;
   bias.allocation_type = kTfLiteArenaRw;
   bias.dims = TfLiteIntArrayCreate(4);
@@ -521,7 +729,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateUint8) {
   bias.quantization.params = reinterpret_cast<void*>(bias_params);
 
   // Create output.
-  TfLiteTensor output;
+  TfLiteTensor output = {};
   output.type = kTfLiteUInt8;
   output.allocation_type = kTfLiteArenaRw;
   output.dims = nullptr;
@@ -537,23 +745,23 @@ TEST_F(KernelUtilTest, CheckAndPopulateUint8) {
   output.quantization.params = reinterpret_cast<void*>(output_params);
 
   // Create call parameters.
-  TfLiteContext context;
   int32_t multiplier;
   int shift;
   int32_t output_activation_min;
   int32_t output_activation_max;
-  std::vector<int32_t> per_channel_multiplier(1);
-  std::vector<int> per_channel_shift(1);
+  std::vector<int32_t> per_channel_multiplier(3);
+  std::vector<int> per_channel_shift(3);
 
   // Call and verify results for per channel case.
   EXPECT_EQ(
       kTfLiteOk,
       PopulateConvolutionQuantizationParams(
-          &context, &input, &filter, &bias, &output, kTfLiteActRelu,
+          &context_, &input, &filter, &bias, &output, kTfLiteActRelu,
           &multiplier, &shift, &output_activation_min, &output_activation_max,
-          per_channel_multiplier.data(), per_channel_shift.data()));
-  EXPECT_THAT(per_channel_multiplier, ::testing::ElementsAre(1073741824));
-  EXPECT_THAT(per_channel_shift, ::testing::ElementsAre(-30));
+          per_channel_multiplier.data(), per_channel_shift.data(), 3));
+  EXPECT_THAT(per_channel_multiplier,
+              ElementsAre(1073741824, 1073741824, 1073741824));
+  EXPECT_THAT(per_channel_shift, ElementsAre(-30, -30, -30));
 
   // Release.
   TfLiteTensorFree(&input);
@@ -564,7 +772,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateUint8) {
 
 TEST_F(KernelUtilTest, CheckAndPopulateWithoutBias) {
   // Create input.
-  TfLiteTensor input;
+  TfLiteTensor input = {};
   input.type = kTfLiteUInt8;
   input.allocation_type = kTfLiteArenaRw;
   input.dims = TfLiteIntArrayCreate(1);
@@ -581,7 +789,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateWithoutBias) {
   input.quantization.params = reinterpret_cast<void*>(input_params);
 
   // Create filter.
-  TfLiteTensor filter;
+  TfLiteTensor filter = {};
   filter.type = kTfLiteUInt8;
   filter.allocation_type = kTfLiteArenaRw;
   filter.dims = TfLiteIntArrayCreate(4);
@@ -603,7 +811,7 @@ TEST_F(KernelUtilTest, CheckAndPopulateWithoutBias) {
   filter.quantization.params = reinterpret_cast<void*>(filter_params);
 
   // Create output.
-  TfLiteTensor output;
+  TfLiteTensor output = {};
   output.type = kTfLiteUInt8;
   output.allocation_type = kTfLiteArenaRw;
   output.dims = nullptr;
@@ -619,23 +827,23 @@ TEST_F(KernelUtilTest, CheckAndPopulateWithoutBias) {
   output.quantization.params = reinterpret_cast<void*>(output_params);
 
   // Create call parameters.
-  TfLiteContext context;
   int32_t multiplier;
   int shift;
   int32_t output_activation_min;
   int32_t output_activation_max;
-  std::vector<int32_t> per_channel_multiplier(1);
-  std::vector<int> per_channel_shift(1);
+  std::vector<int32_t> per_channel_multiplier(3);
+  std::vector<int> per_channel_shift(3);
 
   // Call and verify results for per channel case.
   EXPECT_EQ(
       kTfLiteOk,
       PopulateConvolutionQuantizationParams(
-          &context, &input, &filter, nullptr, &output, kTfLiteActRelu,
+          &context_, &input, &filter, nullptr, &output, kTfLiteActRelu,
           &multiplier, &shift, &output_activation_min, &output_activation_max,
-          per_channel_multiplier.data(), per_channel_shift.data()));
-  EXPECT_THAT(per_channel_multiplier, ::testing::ElementsAre(1073741824));
-  EXPECT_THAT(per_channel_shift, ::testing::ElementsAre(-30));
+          per_channel_multiplier.data(), per_channel_shift.data(), 3));
+  EXPECT_THAT(per_channel_multiplier,
+              ElementsAre(1073741824, 1073741824, 1073741824));
+  EXPECT_THAT(per_channel_shift, ElementsAre(-30, -30, -30));
 
   // Release.
   TfLiteTensorFree(&input);
@@ -643,11 +851,71 @@ TEST_F(KernelUtilTest, CheckAndPopulateWithoutBias) {
   TfLiteTensorFree(&output);
 }
 
+TEST_F(KernelUtilTest, ActivationRangeQuantizedOverflow) {
+  // Create output.
+  TfLiteTensor output = {};
+  output.type = kTfLiteUInt8;
+  output.allocation_type = kTfLiteArenaRw;
+  output.dims = nullptr;
+  TfLiteQuantizationParams output_quant = {1e-10, -128};
+  output.params = output_quant;
+  output.quantization.type = kTfLiteAffineQuantization;
+  auto* output_params = reinterpret_cast<TfLiteAffineQuantization*>(
+      malloc(sizeof(TfLiteAffineQuantization)));
+  output_params->scale = TfLiteFloatArrayCreate(1);
+  output_params->scale->data[0] = 1;
+  output_params->zero_point = TfLiteIntArrayCreate(1);
+  output_params->zero_point->data[0] = -128;
+  output.quantization.params = reinterpret_cast<void*>(output_params);
+
+  // For bounded activation, a too small scale value may cause overflow.
+  // Make sure overflow error is handled gracefully.
+  int32_t act_min, act_max;
+  ASSERT_EQ(kTfLiteOk,
+            CalculateActivationRangeQuantized(&context_, kTfLiteActRelu,
+                                              &output, &act_min, &act_max));
+  ASSERT_NE(kTfLiteOk,
+            CalculateActivationRangeQuantized(&context_, kTfLiteActRelu6,
+                                              &output, &act_min, &act_max));
+  EXPECT_TRUE(absl::StrContains(
+      context_.error, "no_integer_overflow_from_quantization was not true"));
+  ASSERT_NE(kTfLiteOk,
+            CalculateActivationRangeQuantized(&context_, kTfLiteActReluN1To1,
+                                              &output, &act_min, &act_max));
+  EXPECT_TRUE(absl::StrContains(
+      context_.error, "no_integer_overflow_from_quantization was not true"));
+
+  // Release.
+  TfLiteTensorFree(&output);
+}
+
+TEST_F(KernelUtilTest, IsMobilePlatform) {
+  // Note: This isn't meant to be exhaustive, as that would require replicating
+  // the method's implementation, but it is a basic smoke check.
+#if defined(__ANDROID__)
+  EXPECT_TRUE(IsMobilePlatform());
+#elif defined(__linux__)
+  EXPECT_FALSE(IsMobilePlatform());
+#elif defined(_WIN32)
+  EXPECT_FALSE(IsMobilePlatform());
+#endif
+}
+
+TEST_F(KernelUtilTest, HasUnspecifiedDimension) {
+  TfLiteTensor tensor;
+  TfLiteIntArray* shape_sig = TfLiteIntArrayCreate(3);
+  shape_sig->data[0] = 1;
+  shape_sig->data[1] = -1;
+  shape_sig->data[2] = 3;
+  tensor.dims_signature = shape_sig;
+
+  EXPECT_TRUE(HasUnspecifiedDimension(&tensor));
+
+  shape_sig->data[1] = 2;
+  EXPECT_FALSE(HasUnspecifiedDimension(&tensor));
+
+  TfLiteIntArrayFree(shape_sig);
+}
+
 }  // namespace
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::tflite::LogToStderr();
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

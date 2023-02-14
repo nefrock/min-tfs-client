@@ -57,7 +57,7 @@ TEST_F(FunctionOptimizerTest, InlineFunction_SimpleFunction) {
   const string arg0 = "Func/y/input/_0";
   const string ret0 = "Func/y/output/_1";
 
-  const Tensor kTwo = test::AsScalar<int64>(2);
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
   GraphDef expected = test::function::GDef(
       {NDef("x", "Placeholder", {}, {{"dtype", DT_FLOAT}}),
        NDef(arg0, "Identity", {"x"}, {{"T", DT_FLOAT}}),
@@ -253,7 +253,7 @@ TEST_F(FunctionOptimizerTest, InlineFunction_FunctionWithoutInput) {
 
   FunctionOptimizer optimizer(RewriterConfig::DEFAULT, true);
 
-  const Tensor kTwo = test::AsScalar<int64>(2);
+  const Tensor kTwo = test::AsScalar<int64_t>(2);
   FunctionDef func = FunctionDefHelper::Define(
       // Name
       "GenerateTwo",
@@ -782,9 +782,86 @@ TEST_F(FunctionOptimizerTest, InlineIndirectFunctionWithDevicePlacement) {
        NDef(input_x, "Identity", {"a"}, {{"T", DT_FLOAT}}, cpu0),
        NDef(input_y, "Identity", {"b"}, {{"T", DT_FLOAT}}, cpu1),
        NDef("c/mul", "Mul", {input_x, input_y}, {{"T", DT_FLOAT}}, cpu1),
-       NDef(output_z, "Identity", {"c/mul"}, {{"T", DT_FLOAT}}, cpu0),
+       NDef(output_z, "Identity", {"c/mul"}, {{"T", DT_FLOAT}}, cpu1),
 
        NDef("d", "Identity", {output_z}, {{"T", DT_FLOAT}}, cpu0)},
+      // Function library.
+      {mul_func});
+
+  CompareGraphs(expected, optimized_graph);
+}
+
+TEST_F(FunctionOptimizerTest,
+       InlineMultipleIndirectFunctionWithDevicePlacement) {
+  using test::function::NDef;
+  using FDH = FunctionDefHelper;
+
+  FunctionOptimizer optimizer(RewriterConfig::AGGRESSIVE, true);
+
+  FunctionDef mul_func = FunctionDefHelper::Create(
+      "MyMul", {"x:T", "y:T"}, {"z:T"}, {"T: {float, double}"},
+      {{{"mul"}, "Mul", {"x", "y"}, {{"T", "$T"}}}},
+      /* Mapping between function returns and function node outputs. */
+      {{"z", "mul:z:0"}});
+  // Add device placement spec to the function body node.
+  (*mul_func.mutable_node_def())[0].set_device("/device:CPU:1");
+
+  // We need fully defined device names to run the placer for inlined function.
+  const string cpu0 = "/job:work/replica:1/task:1/device:CPU:0";
+  const string cpu1 = "/job:work/replica:1/task:1/device:CPU:1";
+
+  // Build a graph to compute c = MyMul(a, b)
+  GrapplerItem item;
+  item.fetch = {"e"};
+  item.graph = test::function::GDef(
+      {NDef("a", "Placeholder", {}, {{"dtype", DT_FLOAT}}, cpu0),
+       NDef("b", "Placeholder", {}, {{"dtype", DT_FLOAT}}, cpu1),
+       NDef("c", "PartitionedCall", {"a", "b"},
+            {{"Tin", DataTypeSlice{DT_FLOAT, DT_FLOAT}},
+             {"Tout", DataTypeSlice{DT_FLOAT}},
+             {"f", FDH::FunctionRef("MyMul", {{"T", DT_FLOAT}})}},
+            cpu0),
+       NDef("d", "PartitionedCall", {"a", "c"},
+            {{"Tin", DataTypeSlice{DT_FLOAT, DT_FLOAT}},
+             {"Tout", DataTypeSlice{DT_FLOAT}},
+             {"f", FDH::FunctionRef("MyMul", {{"T", DT_FLOAT}})}},
+            cpu0),
+       NDef("e", "Identity", {"d"}, {{"T", DT_FLOAT}}, cpu0)},
+      // Function library.
+      {mul_func});
+  ASSERT_TRUE(item.InferDevicesFromGraph().ok());
+
+  GraphDef optimized_graph;
+  TF_EXPECT_OK(optimizer.Optimize(nullptr, item, &optimized_graph));
+
+  const string input_c_x = "Func/c/input/_0";
+  const string input_c_y = "Func/c/input/_1";
+  const string output_c_z = "Func/c/output/_2";
+  const string input_d_x = "Func/d/input/_3";
+  const string input_d_y = "Func/d/input/_4";
+  const string output_d_z = "Func/d/output/_5";
+
+  GraphDef expected = test::function::GDef(
+      {NDef("a", "Placeholder", {}, {{"dtype", DT_FLOAT}}, cpu0),
+       NDef("b", "Placeholder", {}, {{"dtype", DT_FLOAT}}, cpu1),
+
+       // Function must be inlined and `mul` node placed on a requested device,
+       // and input/output `Identity` nodes must be colocated with their
+       // source nodes.
+       NDef(input_c_x, "Identity", {"a"}, {{"T", DT_FLOAT}}, cpu0),
+       NDef(input_c_y, "Identity", {"b"}, {{"T", DT_FLOAT}}, cpu1),
+       NDef("c/mul", "Mul", {input_c_x, input_c_y}, {{"T", DT_FLOAT}}, cpu1),
+       NDef(output_c_z, "Identity", {"c/mul"}, {{"T", DT_FLOAT}}, cpu1),
+
+       // Function must be inlined and `mul` node placed on a requested device,
+       // and input/output `Identity` nodes must be colocated with their
+       // source nodes.
+       NDef(input_d_x, "Identity", {"a"}, {{"T", DT_FLOAT}}, cpu0),
+       NDef(input_d_y, "Identity", {output_c_z}, {{"T", DT_FLOAT}}, cpu1),
+       NDef("d/mul", "Mul", {input_d_x, input_d_y}, {{"T", DT_FLOAT}}, cpu1),
+       NDef(output_d_z, "Identity", {"d/mul"}, {{"T", DT_FLOAT}}, cpu1),
+
+       NDef("e", "Identity", {output_d_z}, {{"T", DT_FLOAT}}, cpu0)},
       // Function library.
       {mul_func});
 
@@ -1805,9 +1882,9 @@ TEST_F(FunctionOptimizerTest, SpecializeFunctionForUsedOutputTensors) {
     // And all consumers of specialized function nodes must be mapped to new
     // output ports.
     if (node.name() == "use_fn3_1" && ++found) {
-      EXPECT_EQ("fn3:0", node.input(0));
+      EXPECT_EQ("fn3", node.input(0));
     } else if (node.name() == "use_fn4_2" && ++found) {
-      EXPECT_EQ("fn4:0", node.input(0));
+      EXPECT_EQ("fn4", node.input(0));
     } else if (node.name() == "use_fn5_0" && ++found) {
       EXPECT_EQ("fn5", node.input(0));
     } else if (node.name() == "use_fn5_2" && ++found) {
@@ -1966,9 +2043,9 @@ TEST_F(FunctionOptimizerTest, SpecializeIndirectFunctionForUsedOutputTensors) {
     // And all consumers of specialized function nodes must be mapped to new
     // output ports.
     if (node.name() == "use_fn3_1" && ++found) {
-      EXPECT_EQ("fn3:0", node.input(0));
+      EXPECT_EQ("fn3", node.input(0));
     } else if (node.name() == "use_fn4_2" && ++found) {
-      EXPECT_EQ("fn4:0", node.input(0));
+      EXPECT_EQ("fn4", node.input(0));
     } else if (node.name() == "use_fn5_0" && ++found) {
       EXPECT_EQ("fn5", node.input(0));
     } else if (node.name() == "use_fn5_2" && ++found) {

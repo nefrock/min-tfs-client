@@ -15,6 +15,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/llvm_ir/kernel_support_library.h"
 
+#include "tensorflow/compiler/xla/service/llvm_ir/llvm_type_conversion_util.h"
 #include "tensorflow/compiler/xla/service/llvm_ir/llvm_util.h"
 
 namespace xla {
@@ -52,7 +53,7 @@ Status KernelSupportLibrary::ForWithStatus(
                            /*is_first_iteration=*/b_->CreateICmpEQ(
                                loop->GetIndVarValue(), start)));
     llvm_ir::SetToLastInsertPoint(loop->GetExitBasicBlock(), b_);
-    return Status::OK();
+    return OkStatus();
   }
 }
 
@@ -60,13 +61,17 @@ Status KernelSupportLibrary::IfWithStatus(
     absl::string_view name, llvm::Value* condition,
     const std::function<Status()>& true_block_generator,
     const std::function<Status()>& false_block_generator) {
-  llvm_ir::LlvmIfData if_data = llvm_ir::EmitIfThenElse(condition, name, b_);
+  llvm_ir::LlvmIfData if_data =
+      llvm_ir::EmitIfThenElse(condition, name, b_,
+                              /*emit_else=*/false_block_generator != nullptr);
   b_->SetInsertPoint(&if_data.true_block->back());
   TF_RETURN_IF_ERROR(true_block_generator());
-  b_->SetInsertPoint(&if_data.false_block->back());
-  TF_RETURN_IF_ERROR(false_block_generator());
+  if (false_block_generator != nullptr) {
+    b_->SetInsertPoint(&if_data.false_block->back());
+    TF_RETURN_IF_ERROR(false_block_generator());
+  }
   llvm_ir::SetToLastInsertPoint(if_data.after_block, b_);
-  return Status::OK();
+  return OkStatus();
 }
 
 void KernelSupportLibrary::EmitAndCallOutlinedKernel(
@@ -79,10 +84,10 @@ void KernelSupportLibrary::EmitAndCallOutlinedKernel(
   llvm::Function* function =
       module->getFunction(llvm_ir::AsStringRef(kernel_name));
 
-  int64 null_arg_idx = -1;
+  int64_t null_arg_idx = -1;
   std::vector<llvm::Value*> sanitized_args;
   sanitized_args.reserve(arguments.size());
-  for (int64 i = 0, e = arguments.size(); i < e; i++) {
+  for (int64_t i = 0, e = arguments.size(); i < e; i++) {
     if (arguments[i]) {
       sanitized_args.push_back(arguments[i]);
     } else {

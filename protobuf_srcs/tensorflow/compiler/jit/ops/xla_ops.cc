@@ -45,7 +45,7 @@ REGISTER_OP("XlaClusterOutput")
       for (int i = 0; i < c->num_outputs(); ++i) {
         c->set_output(i, c->input(0));
       }
-      return Status::OK();
+      return OkStatus();
     })
     .Doc(
         "Operator that connects the output of an XLA computation to other "
@@ -102,7 +102,7 @@ REGISTER_OP("_XlaMerge")
     .Attr("T: type")
     .SetShapeFn([](InferenceContext* c) {
       c->set_output(0, c->input(0));
-      return Status::OK();
+      return OkStatus();
     })
     .Doc(R"(XLA Merge Op. For use by the XLA JIT only.
 
@@ -110,7 +110,7 @@ Merges the outputs from the PartitionedCall node and the _XlaRun node.
 Unlike the TensorFlow Merge op, which requires inputs of some types to be
 placed on the host, the _XlaMerge op can merge inputs of all types when
 placed on the device. This prevents the need for copy operations, in
-particluar when an XLA cluster has int32 outputs. The _XlaMerge up does not
+particular when an XLA cluster has int32 outputs. The _XlaMerge up does not
 have a value_index output that identifies the chosen input.
 )");
 

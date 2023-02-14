@@ -16,9 +16,12 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/gl/kernels/slice.h"
 
 #include <algorithm>
+#include <any>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/memory/memory.h"
@@ -33,12 +36,9 @@ namespace {
 
 class Slice : public NodeShader {
  public:
-  Status GenerateCode(const GenerationContext& ctx,
-                      GeneratedCode* generated_code) const final {
-    auto output = ctx.graph->FindOutputs(ctx.node->id)[0];
-
-    auto attr =
-        absl::any_cast<const SliceAttributes&>(ctx.node->operation.attributes);
+  absl::Status GenerateCode(const GenerationContext& ctx,
+                            GeneratedCode* generated_code) const final {
+    const auto& attr = std::any_cast<const SliceAttributes&>(ctx.op_attr);
 
     const int4 channels(attr.starts.c, attr.strides.c, attr.ends.c, 0);
     const int4 heights(attr.starts.h, attr.strides.h, attr.ends.h, 0);
@@ -48,7 +48,7 @@ class Slice : public NodeShader {
         {"channels", channels},
         {"heights", heights},
         {"widths", widths},
-        {"dst_size", output->tensor.shape.c},
+        {"dst_size", static_cast<int>(ctx.output_shapes[0][3])},
     };
 
     std::string code;
@@ -107,14 +107,14 @@ class Slice : public NodeShader {
         /*input=*/IOStructure::ONLY_DEFINITIONS,
         /*output=*/IOStructure::AUTO,
     };
-    return OkStatus();
+    return absl::OkStatus();
   }
 };
 
 }  // namespace
 
 std::unique_ptr<NodeShader> NewSliceNodeShader() {
-  return absl::make_unique<Slice>();
+  return std::make_unique<Slice>();
 }
 
 }  // namespace gl

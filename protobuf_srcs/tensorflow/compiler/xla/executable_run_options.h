@@ -16,9 +16,8 @@ limitations under the License.
 #ifndef TENSORFLOW_COMPILER_XLA_EXECUTABLE_RUN_OPTIONS_H_
 #define TENSORFLOW_COMPILER_XLA_EXECUTABLE_RUN_OPTIONS_H_
 
+#include <functional>
 #include <string>
-
-#include "tensorflow/compiler/xla/types.h"
 
 // These classes are forward declared so that ExecutableRunOptions can be linked
 // into an XLA-compiled binary without having to link all of the pointed-to
@@ -38,6 +37,9 @@ namespace xla {
 
 class DeviceAssignment;
 class ExecutionProfile;
+namespace gpu {
+class GpuExecutableRunOptions;
+}  // namespace gpu
 
 // A unique identifier for a particular "logical execution" of an XLA model.
 //
@@ -49,11 +51,13 @@ class RunId {
  public:
   // Creates a new, unique RunId.
   RunId();
+  explicit RunId(int64_t value) : data_(value) {}
 
   RunId(const RunId&) = default;
   RunId& operator=(const RunId&) = default;
   friend bool operator==(const RunId& a, const RunId& b);
   std::string ToString() const;
+  int64_t ToInt() const;
 
   template <typename H>
   friend H AbslHashValue(H h, const RunId& id) {
@@ -61,8 +65,17 @@ class RunId {
   }
 
  private:
-  int64 data_;
+  int64_t data_;
 };
+
+// Callback used by the GPU backend only. This is an "one-sided" version of
+// ThenDoHostCallback that enqueues a callback onto a stream. The difference
+// with ThenDoHostCallback is that the device does not block waiting for the
+// callback to complete; instead the callback is scheduled by the runtime.
+// This functionality must be provided by the caller, and hence is provided in
+// callback form.
+using ThenExecuteFunction =
+    std::function<void(stream_executor::Stream*, std::function<void()>)>;
 
 // Class containing options for running a LocalExecutable.
 class ExecutableRunOptions {
@@ -116,8 +129,30 @@ class ExecutableRunOptions {
   ExecutableRunOptions& set_rng_seed(int rng_seed);
   int rng_seed() const;
 
+  ExecutableRunOptions& set_launch_id(int32_t launch_id) {
+    launch_id_ = launch_id;
+    return *this;
+  }
+
+  int32_t launch_id() const { return launch_id_; }
+
   ExecutableRunOptions& set_run_id(RunId id);
   RunId run_id() const;
+
+  // See documentation on ThenExecuteFunction.
+  ExecutableRunOptions& set_then_execute_function(ThenExecuteFunction* f) {
+    then_execute_function_ = f;
+    return *this;
+  }
+  ThenExecuteFunction* then_execute_function() const {
+    return then_execute_function_;
+  }
+
+  // GPU-backend specific options. These are kept out-of-line to avoid bloating
+  // the size of this dependency for CPU-only AOT builds.
+  ExecutableRunOptions& set_gpu_executable_run_options(
+      const gpu::GpuExecutableRunOptions* gpu_executable_run_options);
+  const gpu::GpuExecutableRunOptions* gpu_executable_run_options() const;
 
  private:
   stream_executor::DeviceMemoryAllocator* allocator_ = nullptr;
@@ -127,8 +162,11 @@ class ExecutableRunOptions {
   const Eigen::ThreadPoolDevice* intra_op_thread_pool_ = nullptr;
   ExecutionProfile* execution_profile_ = nullptr;
   int rng_seed_ = 0;
+  int32_t launch_id_ = 0;
   stream_executor::Stream* host_to_device_stream_ = nullptr;
+  ThenExecuteFunction* then_execute_function_ = nullptr;
   RunId run_id_;
+  const gpu::GpuExecutableRunOptions* gpu_executable_run_options_ = nullptr;
 };
 
 }  // namespace xla

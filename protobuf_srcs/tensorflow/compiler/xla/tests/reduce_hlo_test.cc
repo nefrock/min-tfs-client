@@ -19,8 +19,7 @@ limitations under the License.
 #include "absl/strings/str_join.h"
 #include "tensorflow/compiler/xla/tests/hlo_test_base.h"
 #include "tensorflow/compiler/xla/tests/test_macros.h"
-#include "tensorflow/core/platform/test.h"
-#include "tensorflow/core/platform/types.h"
+#include "tensorflow/tsl/platform/test.h"
 
 // Tests the Reduce HLO in ways that can't be done using the ComputationBuilder
 // API.
@@ -29,16 +28,16 @@ namespace xla {
 namespace {
 
 struct ReduceLayout {
-  std::array<int64, 4> input_minor_to_major;
-  std::array<int64, 3> output_minor_to_major;
+  std::array<int64_t, 4> input_minor_to_major;
+  std::array<int64_t, 3> output_minor_to_major;
 
-  string ToString() const {
+  std::string ToString() const {
     return absl::StrCat(absl::StrJoin(input_minor_to_major, "x"), "_",
                         absl::StrJoin(output_minor_to_major, "x"));
   }
 };
 
-string PrintReduceLayout(
+std::string PrintReduceLayout(
     ::testing::TestParamInfo<ReduceLayout> reduce_layout_param) {
   return reduce_layout_param.param.ToString();
 }
@@ -106,7 +105,10 @@ XLA_TEST_P(ReduceWithLayoutTest, Reduce) {
          {-0.241772294, -0.245131493, -0.160247207},
          {-0.179881215, -0.23383224, -0.121976733}}}});
 
-  EXPECT_TRUE(RunAndCompareNoHloPasses(std::move(module), ErrorSpec(1e-5)));
+  auto reduce_input_relaid =
+      reduce_input.Relayout(reduce_input_shape->layout());
+  EXPECT_TRUE(RunAndCompareNoHloPasses(
+      std::move(module), {&reduce_input_relaid}, ErrorSpec(1e-5)));
 }
 
 INSTANTIATE_TEST_CASE_P(ReduceWithLayoutTest_Instantiation,

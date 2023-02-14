@@ -105,9 +105,9 @@ class QuantizedConcatOp : public OpKernel {
     }
   }
 
-  int64 CalculateInputsDim(const TensorShape& input_shape,
-                           const int32 concat_dim) {
-    int64 inputs_flat_dim0 = 1;
+  int64_t CalculateInputsDim(const TensorShape& input_shape,
+                             const int32_t concat_dim) {
+    int64_t inputs_flat_dim0 = 1;
     for (int d = 0; d < concat_dim; ++d) {
       inputs_flat_dim0 *= input_shape.dim_size(d);
     }
@@ -116,8 +116,8 @@ class QuantizedConcatOp : public OpKernel {
 
   void CalculateConcatDims(const size_t N, const TensorShape& input_shape,
                            int input_dims, const OpInputList& values,
-                           OpKernelContext* context, const int32 concat_dim,
-                           const int64 inputs_flat_dim0,
+                           OpKernelContext* context, const int32_t concat_dim,
+                           const int64_t inputs_flat_dim0,
                            ConstMatrixVector* inputs_flat,
                            int* output_concat_dim) {
     // Note that we reduce the concat of n-dimensional tensors into a two
@@ -127,10 +127,10 @@ class QuantizedConcatOp : public OpKernel {
     // Prod_i(yi) and x = ((n > 0) ? Prod_i(xi) : 1).
     inputs_flat->reserve(N);
     *output_concat_dim = 0;
-    const bool input_is_scalar = IsLegacyScalar(input_shape);
+    const bool input_is_scalar = TensorShapeUtils::IsScalar(input_shape);
     for (int i = 0; i < N; ++i) {
       const auto in = values[i];
-      const bool in_is_scalar = IsLegacyScalar(in.shape());
+      const bool in_is_scalar = TensorShapeUtils::IsScalar(in.shape());
       OP_REQUIRES(
           context, in.dims() == input_dims || (input_is_scalar && in_is_scalar),
           errors::InvalidArgument(
@@ -149,7 +149,7 @@ class QuantizedConcatOp : public OpKernel {
                 "] = ", in.shape().DebugString()));
       }
       if (in.NumElements() > 0) {
-        int64 inputs_flat_dim1 = in.NumElements() / inputs_flat_dim0;
+        int64_t inputs_flat_dim1 = in.NumElements() / inputs_flat_dim0;
         inputs_flat->emplace_back(new typename TTypes<T, 2>::ConstMatrix(
             in.shaped<T, 2>({inputs_flat_dim0, inputs_flat_dim1})));
       }
@@ -161,11 +161,11 @@ class QuantizedConcatOp : public OpKernel {
     const Tensor* concat_dim_tensor = nullptr;
     OP_REQUIRES_OK(context, context->input("concat_dim", &concat_dim_tensor));
     OP_REQUIRES(
-        context, IsLegacyScalar(concat_dim_tensor->shape()),
+        context, TensorShapeUtils::IsScalar(concat_dim_tensor->shape()),
         errors::InvalidArgument(
             "Concat dim tensor should be a scalar integer, but got shape ",
             concat_dim_tensor->shape().DebugString()));
-    const int32 concat_dim = concat_dim_tensor->scalar<int32>()();
+    const int32_t concat_dim = concat_dim_tensor->scalar<int32>()();
     OpInputList values;
     OP_REQUIRES_OK(context, context->input_list("values", &values));
     const size_t N = values.size();
@@ -184,9 +184,7 @@ class QuantizedConcatOp : public OpKernel {
     const int input_dims = values[0].dims();
     const TensorShape& input_shape = values[0].shape();
     OP_REQUIRES(
-        context,
-        (0 <= concat_dim && concat_dim < input_dims) ||
-            (allow_legacy_scalars() && concat_dim == 0),
+        context, (0 <= concat_dim && concat_dim < input_dims),
         errors::InvalidArgument(
             "ConcatOp : Expected concatenating dimensions in the range [", 0,
             ", ", input_dims, "), but got ", concat_dim));
@@ -197,7 +195,8 @@ class QuantizedConcatOp : public OpKernel {
     CalculateInputAndOutputRange(input_mins, input_maxes, N,
                                  &input_mins_and_maxes, &output_min,
                                  &output_max);
-    const int64 inputs_flat_dim0 = CalculateInputsDim(input_shape, concat_dim);
+    const int64_t inputs_flat_dim0 =
+        CalculateInputsDim(input_shape, concat_dim);
     ConstMatrixVector inputs_flat;
     int output_concat_dim;
     CalculateConcatDims(N, input_shape, input_dims, values, context, concat_dim,
@@ -214,7 +213,7 @@ class QuantizedConcatOp : public OpKernel {
     OP_REQUIRES_OK(context, context->allocate_output(0, output_shape, &output));
 
     if (output->NumElements() > 0) {
-      int64 output_dim1 = output->NumElements() / inputs_flat_dim0;
+      int64_t output_dim1 = output->NumElements() / inputs_flat_dim0;
       auto output_flat = output->shaped<T, 2>({inputs_flat_dim0, output_dim1});
       ConcatCPUImpl<T>(
           context->device(), inputs_flat, sizeof(T) /* cost_per_unit */,
@@ -245,17 +244,5 @@ REGISTER_QUANTIZED_CONCAT(quint8);
 REGISTER_QUANTIZED_CONCAT(qint32);
 
 #undef REGISTER_QUANTIZED_CONCAT
-
-#ifdef INTEL_MKL
-#define REGISTER_QUANTIZED_CONCATV2(type)                \
-  REGISTER_KERNEL_BUILDER(Name("QuantizedConcatV2")      \
-                              .Device(DEVICE_CPU)        \
-                              .TypeConstraint<type>("T") \
-                              .HostMemory("axis"),       \
-                          QuantizedConcatOp<type>)
-
-REGISTER_QUANTIZED_CONCATV2(quint8);
-REGISTER_QUANTIZED_CONCATV2(qint32);
-#endif
 
 }  // namespace tensorflow

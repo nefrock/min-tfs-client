@@ -21,10 +21,8 @@ limitations under the License.
 #include <vector>
 
 #include "tensorflow/compiler/xla/statusor.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
 #include "tensorflow/compiler/xla/types.h"
-#include "tensorflow/core/platform/macros.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
-#include "tensorflow/core/platform/types.h"
 
 namespace xla {
 
@@ -44,19 +42,9 @@ class PlatformUtil {
   // platform. Otherwise returns an error.
   static StatusOr<se::Platform*> GetDefaultPlatform();
 
-  // Convenience function which returns the sole supported platform. If
-  // exactly one supported platform is present, then this platform is the
-  // default platform. Otherwise returns an error.
-  static StatusOr<se::Platform*> GetSolePlatform();
-
   // Returns the platform according to the given name. Returns error if there is
   // no such platform.
-  static StatusOr<se::Platform*> GetPlatform(const string& platform_name);
-
-  // Returns exactly one platform that does not have given name. Returns error
-  // if there is no such platform, or there are multiple such platforms.
-  static StatusOr<se::Platform*> GetPlatformExceptFor(
-      const string& platform_name);
+  static StatusOr<se::Platform*> GetPlatform(const std::string& platform_name);
 
   // Returns a vector of StreamExecutors for the given platform.
   // If populated, only the devices in allowed_devices will have
@@ -66,10 +54,11 @@ class PlatformUtil {
   // If the platform has no visible devices, a not-found error is returned.
   static StatusOr<std::vector<se::StreamExecutor*>> GetStreamExecutors(
       se::Platform* platform,
-      const absl::optional<std::set<int>>& allowed_devices = absl::nullopt);
+      const std::optional<std::set<int>>& allowed_devices = std::nullopt);
 
  private:
-  TF_DISALLOW_COPY_AND_ASSIGN(PlatformUtil);
+  PlatformUtil(const PlatformUtil&) = delete;
+  PlatformUtil& operator=(const PlatformUtil&) = delete;
 };
 
 }  // namespace xla

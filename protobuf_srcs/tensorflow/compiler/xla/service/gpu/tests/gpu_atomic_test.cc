@@ -18,7 +18,7 @@ limitations under the License.
 
 #include "tensorflow/compiler/xla/service/gpu/tests/gpu_codegen_test.h"
 #include "tensorflow/compiler/xla/tests/filecheck.h"
-#include "tensorflow/core/platform/test.h"
+#include "tensorflow/tsl/platform/test.h"
 
 namespace xla {
 namespace gpu {
@@ -77,6 +77,74 @@ TEST_F(GpuAtomicTest, TestStoreNoAtomic) {
 
   CompileAndVerifyIr(hlo_string, R"(
 CHECK-NOT: store atomic{{.*}}unordered, align 4
+)");
+}
+
+TEST_F(GpuAtomicTest, TestAddAtomicF32) {
+  const char* hlo_string = R"(
+    HloModule TensorFlowScatterV1
+
+    update_f32 (lhs: f32[], rhs: f32[]) -> f32[] {
+      lhs = f32[] parameter(0)
+      rhs = f32[] parameter(1)
+      ROOT add = f32[] add(lhs, rhs)
+    }
+
+    ENTRY main {
+      operand = f32[3,3] parameter(0)
+      indices = s32[2] parameter(1)
+      updates = f32[2,3] parameter(2)
+      ROOT scatter = f32[3,3] scatter(operand, indices, updates),
+          to_apply=update_f32,
+          update_window_dims={1},
+          inserted_window_dims={0},
+          scatter_dims_to_operand_dims={0},
+          index_vector_dim=1, unique_indices=false
+    }
+)";
+
+  CompileAndVerifyIr(hlo_string, is_built_with_rocm_ ? R"(
+CHECK: atomicrmw fadd float addrspace{{.*}}, float {{.*}} seq_cst, align 4
+)"
+                                                     : R"(
+CHECK: atomicrmw fadd ptr %[[ADDR:.*]], float %[[VALUE:.*]] seq_cst
+)");
+}
+
+TEST_F(GpuAtomicTest, TestAddAtomicF64) {
+  // Atomic add required sm_60 or above.
+  if (!backend()
+           .default_stream_executor()
+           ->GetDeviceDescription()
+           .cuda_compute_capability()
+           .IsAtLeast(6)) {
+    return;
+  }
+
+  const char* hlo_string = R"(
+    HloModule TensorFlowScatterV1
+
+    update_f64 (lhs: f64[], rhs: f64[]) -> f64[] {
+      lhs = f64[] parameter(0)
+      rhs = f64[] parameter(1)
+      ROOT add = f64[] add(lhs, rhs)
+    }
+
+    ENTRY main {
+      operand = f64[3,3] parameter(0)
+      indices = s32[2] parameter(1)
+      updates = f64[2,3] parameter(2)
+      ROOT scatter = f64[3,3] scatter(operand, indices, updates),
+          to_apply=update_f64,
+          update_window_dims={1},
+          inserted_window_dims={0},
+          scatter_dims_to_operand_dims={0},
+          index_vector_dim=1, unique_indices=false
+    }
+)";
+
+  CompileAndVerifyIr(hlo_string, R"(
+CHECK: atomicrmw fadd ptr %[[ADDR:.*]], double %[[VALUE:.*]] seq_cst
 )");
 }
 

@@ -36,6 +36,9 @@ std::shared_ptr<RamFileBlockCache::Block> RamFileBlockCache::Lookup(
   auto entry = block_map_.find(key);
   if (entry != block_map_.end()) {
     if (BlockNotStale(entry->second)) {
+      if (cache_stats_ != nullptr) {
+        cache_stats_->RecordCacheHitBlockSize(entry->second->data.size());
+      }
       return entry->second;
     } else {
       // Remove the stale block and continue.
@@ -68,7 +71,7 @@ Status RamFileBlockCache::UpdateLRU(const Key& key,
   mutex_lock lock(mu_);
   if (block->timestamp == 0) {
     // The block was evicted from another thread. Allow it to remain evicted.
-    return Status::OK();
+    return OkStatus();
   }
   if (block->lru_iterator != lru_list_.begin()) {
     lru_list_.erase(block->lru_iterator);
@@ -90,7 +93,7 @@ Status RamFileBlockCache::UpdateLRU(const Key& key,
 
   Trim();
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status RamFileBlockCache::MaybeFetch(const Key& key,
@@ -118,7 +121,7 @@ Status RamFileBlockCache::MaybeFetch(const Key& key,
   // Loop until either block content is successfully fetched, or our request
   // encounters an error.
   mutex_lock l(block->mu);
-  Status status = Status::OK();
+  Status status = OkStatus();
   while (true) {
     switch (block->state) {
       case FetchState::ERROR:
@@ -131,6 +134,9 @@ Status RamFileBlockCache::MaybeFetch(const Key& key,
         size_t bytes_transferred;
         status.Update(block_fetcher_(key.first, key.second, block_size_,
                                      block->data.data(), &bytes_transferred));
+        if (cache_stats_ != nullptr) {
+          cache_stats_->RecordCacheMissBlockSize(bytes_transferred);
+        }
         block->mu.lock();  // Reacquire the lock immediately afterwards
         if (status.ok()) {
           block->data.resize(bytes_transferred, 0);
@@ -147,12 +153,12 @@ Status RamFileBlockCache::MaybeFetch(const Key& key,
       case FetchState::FETCHING:
         block->cond_var.wait_for(l, std::chrono::seconds(60));
         if (block->state == FetchState::FINISHED) {
-          return Status::OK();
+          return OkStatus();
         }
         // Re-loop in case of errors.
         break;
       case FetchState::FINISHED:
-        return Status::OK();
+        return OkStatus();
     }
   }
   return errors::Internal(
@@ -163,7 +169,7 @@ Status RamFileBlockCache::Read(const string& filename, size_t offset, size_t n,
                                char* buffer, size_t* bytes_transferred) {
   *bytes_transferred = 0;
   if (n == 0) {
-    return Status::OK();
+    return OkStatus();
   }
   if (!IsCacheEnabled() || (n > max_bytes_)) {
     // The cache is effectively disabled, so we pass the read through to the
@@ -218,11 +224,11 @@ Status RamFileBlockCache::Read(const string& filename, size_t offset, size_t n,
     }
   }
   *bytes_transferred = total_bytes_transferred;
-  return Status::OK();
+  return OkStatus();
 }
 
 bool RamFileBlockCache::ValidateAndUpdateFileSignature(const string& filename,
-                                                       int64 file_signature) {
+                                                       int64_t file_signature) {
   mutex_lock lock(mu_);
   auto it = file_signature_map_.find(filename);
   if (it != file_signature_map_.end()) {

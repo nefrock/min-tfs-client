@@ -21,18 +21,18 @@ limitations under the License.
 #ifdef _WIN32
 #define timegm _mkgmtime
 #endif
-#include "tensorflow/core/lib/core/errors.h"
+#include "tensorflow/core/platform/errors.h"
 
 namespace tensorflow {
 
 namespace {
-constexpr int64 kNanosecondsPerSecond = 1000 * 1000 * 1000;
+constexpr int64_t kNanosecondsPerSecond = 1000 * 1000 * 1000;
 
 }  // namespace
 
 // Only implements one special case of RFC 3339 which is returned by
 // GCS API, e.g 2016-04-29T23:15:24.896Z.
-Status ParseRfc3339Time(const string& time, int64* mtime_nsec) {
+Status ParseRfc3339Time(const string& time, int64_t* mtime_nsec) {
   tm parsed{0};
   float seconds;
   if (sscanf(time.c_str(), "%4d-%2d-%2dT%2d:%2d:%fZ", &(parsed.tm_year),
@@ -47,10 +47,10 @@ Status ParseRfc3339Time(const string& time, int64* mtime_nsec) {
   parsed.tm_sec = int_seconds;
 
   *mtime_nsec = timegm(&parsed) * kNanosecondsPerSecond +
-                static_cast<int64>(std::floor((seconds - int_seconds) *
-                                              kNanosecondsPerSecond));
+                static_cast<int64_t>(std::floor((seconds - int_seconds) *
+                                                kNanosecondsPerSecond));
 
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

@@ -17,8 +17,8 @@ limitations under the License.
 
 #include <map>
 
-#include "tensorflow/lite/c/c_api_internal.h"
 #include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/lite/c/common.h"
 
 namespace tflite {
 namespace flex {
@@ -47,14 +47,22 @@ class BufferMap {
   // Precondition: HasTensor() is true.
   tensorflow::Tensor GetTensor(int tensor_index) const;
 
+  // Returns the const pointer to tensorflow::Tensor associated with the given
+  // 'tensor_index'.
+  // Precondition: HasTensor() is true.
+  const tensorflow::Tensor* GetTensorPtr(int tensor_index) const;
+
   // Associates the given tensorflow::Tensor with the given 'tensor_index'.
   // Note that TensorFlow Tensors share data buffers, so this method is only a
   // shallow copy.
   void SetFromTensorFlow(int tensor_index, tensorflow::Tensor tensor);
 
   // Same as above but creates a new tensorflow::Tensor with a copy of the
-  // given TfLiteTensor's data.
-  void SetFromTfLite(int tensor_index, const TfLiteTensor* tensor);
+  // given TfLiteTensor's data. If `allow_reusing=false`, then we explicitly
+  // disallow reusing the TF Lite tensor buffer when constructing the new
+  // tensorflow Tensor.
+  void SetFromTfLite(int tensor_index, const TfLiteTensor* tensor,
+                     bool allow_reusing = true);
 
  private:
   // Mapping from TL Lite tensor ID to TensorFlow's Tensor. All tensors that

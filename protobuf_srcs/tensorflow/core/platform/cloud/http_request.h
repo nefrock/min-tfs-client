@@ -19,12 +19,13 @@ limitations under the License.
 #include <string>
 #include <unordered_map>
 #include <vector>
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/core/status.h"
-#include "tensorflow/core/lib/core/stringpiece.h"
+
 #include "tensorflow/core/platform/env.h"
+#include "tensorflow/core/platform/errors.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/protobuf.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/platform/stringpiece.h"
 #include "tensorflow/core/platform/types.h"
 
 namespace tensorflow {
@@ -107,7 +108,7 @@ class HttpRequest {
   /// Note: because GCS is available over HTTPS, we cannot replace the hostname
   /// in the URI with an IP address, as that will cause the certificate check
   /// to fail.
-  virtual void AddResolveOverride(const string& hostname, int64 port,
+  virtual void AddResolveOverride(const string& hostname, int64_t port,
                                   const string& ip_addr) = 0;
 
   /// Sets the 'Authorization' header to the value of 'Bearer ' + auth_token.

@@ -15,7 +15,7 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/optimization_registry.h"
 
-#include "tensorflow/core/common_runtime/metrics.h"
+#include "tensorflow/core/framework/metrics.h"
 #include "tensorflow/core/util/dump_graph.h"
 
 namespace tensorflow {
@@ -34,41 +34,63 @@ void OptimizationPassRegistry::Register(
 
 Status OptimizationPassRegistry::RunGrouping(
     Grouping grouping, const GraphOptimizationPassOptions& options) {
+  auto dump_graph = [&](std::string& prefix) {
+    if (options.graph) {
+      DumpGraphToFile(
+          strings::StrCat(prefix, "_",
+                          reinterpret_cast<uintptr_t>((*options.graph).get())),
+          **options.graph, options.flib_def);
+    }
+    if (options.partition_graphs) {
+      for (auto& part : *options.partition_graphs) {
+        DumpGraphToFile(
+            strings::StrCat(prefix, "_partition_", part.first, "_",
+                            reinterpret_cast<uintptr_t>(part.second.get())),
+            *part.second, options.flib_def);
+      }
+    }
+  };
+
+  VLOG(1) << "Starting optimization of a group " << grouping;
+  if (VLOG_IS_ON(3)) {
+    std::string prefix = strings::StrCat("before_grouping_", grouping);
+    dump_graph(prefix);
+  }
   auto group = groups_.find(grouping);
   if (group != groups_.end()) {
+    static const char* kGraphOptimizationCategory = "GraphOptimizationPass";
+    tensorflow::metrics::ScopedCounter<2> group_timings(
+        tensorflow::metrics::GetGraphOptimizationCounter(),
+        {kGraphOptimizationCategory, "*"});
     for (auto& phase : group->second) {
       VLOG(1) << "Running optimization phase " << phase.first;
       for (auto& pass : phase.second) {
         VLOG(1) << "Running optimization pass: " << pass->name();
-        const uint64 start_us = Env::Default()->NowMicros();
+
+        tensorflow::metrics::ScopedCounter<2> pass_timings(
+            tensorflow::metrics::GetGraphOptimizationCounter(),
+            {kGraphOptimizationCategory, pass->name()});
         Status s = pass->Run(options);
-        const uint64 end_us = Env::Default()->NowMicros();
-        metrics::UpdateGraphOptimizationPassTime(pass->name(),
-                                                 end_us - start_us);
+
         if (!s.ok()) return s;
-        if (VLOG_IS_ON(1)) {
-          if (options.graph) {
-            DumpGraphToFile(strings::StrCat("after_group_", grouping, "_phase_",
-                                            phase.first, "_", pass->name(), "_",
-                                            reinterpret_cast<uintptr_t>(
-                                                (*options.graph).get())),
-                            **options.graph, options.flib_def);
-          }
-          if (options.partition_graphs) {
-            for (auto& part : *options.partition_graphs) {
-              DumpGraphToFile(
-                  strings::StrCat(
-                      "after_group_", grouping, "_phase_", phase.first, "_",
-                      pass->name(), "_partition_", part.first, "_",
-                      reinterpret_cast<uintptr_t>(part.second.get())),
-                  *part.second, options.flib_def);
-            }
-          }
+        pass_timings.ReportAndStop();
+        if (VLOG_IS_ON(5)) {
+          std::string prefix =
+              strings::StrCat("after_group_", grouping, "_phase_", phase.first,
+                              "_", pass->name());
+          dump_graph(prefix);
         }
       }
     }
+    group_timings.ReportAndStop();
   }
-  return Status::OK();
+  VLOG(1) << "Finished optimization of a group " << grouping;
+  if (VLOG_IS_ON(3) ||
+      (VLOG_IS_ON(2) && grouping == Grouping::POST_REWRITE_FOR_EXEC)) {
+    std::string prefix = strings::StrCat("after_grouping_", grouping);
+    dump_graph(prefix);
+  }
+  return OkStatus();
 }
 
 void OptimizationPassRegistry::LogGrouping(Grouping grouping, int vlog_level) {

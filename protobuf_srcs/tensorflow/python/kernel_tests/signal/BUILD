@@ -1,17 +1,15 @@
-load("//tensorflow:tensorflow.bzl", "cuda_py_tests")
+load("//tensorflow:tensorflow.default.bzl", "cuda_py_test")
 load("//tensorflow:tensorflow.bzl", "py_test")  # @unused
 
 package(
     default_visibility = ["//tensorflow:internal"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
-
-exports_files(["LICENSE"])
 
 py_library(
     name = "test_util",
     srcs = ["test_util.py"],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     deps = [
         "//tensorflow/core:protos_all_py",
         "//tensorflow/lite/python:interpreter",
@@ -21,137 +19,149 @@ py_library(
     ],
 )
 
-cuda_py_tests(
+cuda_py_test(
     name = "dct_ops_test",
     srcs = ["dct_ops_test.py"],
-    additional_deps = [
-        "@absl_py//absl/testing:parameterized",
-        "//third_party/py/numpy",
+    python_version = "PY3",
+    shard_count = 16,
+    deps = [
         "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework",
         "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python/eager:def_function",
         "//tensorflow/python/ops/signal",
+        "//tensorflow/python/platform",
+        "//third_party/py/numpy",
+        "@absl_py//absl/testing:parameterized",
     ],
-    tags = ["no_rocm"],
 )
 
-cuda_py_tests(
+cuda_py_test(
     name = "fft_ops_test",
     size = "medium",
     srcs = ["fft_ops_test.py"],
-    additional_deps = [
-        "//third_party/py/numpy",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python/ops/signal",
-    ],
+    python_version = "PY3",
     shard_count = 8,
     tags = [
-        "no_rocm",
+        "no_cuda11",  # TODO(b/197522782): reenable test after fixing.
         "optonly",
     ],
+    deps = [
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:math_ops",
+        "//tensorflow/python/ops/signal",
+        "//third_party/py/numpy",
+    ],
 )
 
-cuda_py_tests(
+cuda_py_test(
     name = "mel_ops_test",
     srcs = ["mel_ops_test.py"],
-    additional_deps = [
+    python_version = "PY3",
+    deps = [
         ":test_util",
-        "//third_party/py/numpy",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python/ops/signal",
+        "//third_party/py/numpy",
     ],
 )
 
-cuda_py_tests(
+cuda_py_test(
     name = "mfcc_ops_test",
     srcs = ["mfcc_ops_test.py"],
-    additional_deps = [
-        "@absl_py//absl/testing:parameterized",
-        "//third_party/py/numpy",
+    python_version = "PY3",
+    deps = [
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:framework_test_lib",
         "//tensorflow/python/ops/signal",
+        "//third_party/py/numpy",
+        "@absl_py//absl/testing:parameterized",
     ],
-    tags = ["no_rocm"],
 )
 
-cuda_py_tests(
+cuda_py_test(
     name = "reconstruction_ops_test",
     srcs = ["reconstruction_ops_test.py"],
-    additional_deps = [
-        "@absl_py//absl/testing:parameterized",
-        "//third_party/py/numpy",
+    python_version = "PY3",
+    deps = [
         "//tensorflow/python:array_ops",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:framework_test_lib",
         "//tensorflow/python:gradients",
         "//tensorflow/python:math_ops",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python/ops/signal",
         "//tensorflow/python:platform_test",
+        "//tensorflow/python/ops/signal",
+        "//third_party/py/numpy",
+        "@absl_py//absl/testing:parameterized",
     ],
 )
 
-cuda_py_tests(
+cuda_py_test(
     name = "shape_ops_test",
     srcs = ["shape_ops_test.py"],
-    additional_deps = [
+    python_version = "PY3",
+    deps = [
         ":test_util",
-        "//third_party/py/numpy",
         "//tensorflow/python:array_ops",
-        "//tensorflow/python:math_ops",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python/ops/signal",
+        "//tensorflow/python:math_ops",
         "//tensorflow/python:platform_test",
+        "//tensorflow/python/ops/signal",
+        "//third_party/py/numpy",
     ],
 )
 
-cuda_py_tests(
+cuda_py_test(
     name = "spectral_ops_test",
     size = "large",
     srcs = ["spectral_ops_test.py"],
-    additional_deps = [
-        "@absl_py//absl/testing:parameterized",
-        "//third_party/py/numpy",
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:gradients",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python:random_ops",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:framework_for_generated_wrappers",
-        "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python:platform_test",
-        "//tensorflow/python/ops/signal",
-    ],
+    python_version = "PY3",
     tags = [
         "no_rocm",
         "nomac",
     ],
-)
-
-cuda_py_tests(
-    name = "window_ops_test",
-    srcs = ["window_ops_test.py"],
-    additional_deps = [
-        ":test_util",
-        "//third_party/py/numpy",
+    deps = [
+        "//tensorflow/python:array_ops",
         "//tensorflow/python:client_testlib",
         "//tensorflow/python:framework",
         "//tensorflow/python:framework_for_generated_wrappers",
         "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python/ops/signal",
+        "//tensorflow/python:gradients",
+        "//tensorflow/python:math_ops",
         "//tensorflow/python:platform_test",
+        "//tensorflow/python:random_ops",
+        "//tensorflow/python/ops/signal",
+        "//third_party/py/numpy",
+        "@absl_py//absl/testing:parameterized",
     ],
+)
+
+cuda_py_test(
+    name = "window_ops_test",
+    srcs = ["window_ops_test.py"],
+    python_version = "PY3",
     shard_count = 4,
     tags = [
+        "no_rocm",
         "no_windows_gpu",
+    ],
+    deps = [
+        ":test_util",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework",
+        "//tensorflow/python:framework_for_generated_wrappers",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python:platform_test",
+        "//tensorflow/python/ops/signal",
+        "//third_party/py/numpy",
     ],
 )

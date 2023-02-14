@@ -13,13 +13,10 @@
 # limitations under the License.
 # ==============================================================================
 """Tests for `tf.data.Dataset.filter()`."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import parameterized
 import numpy as np
 
+from tensorflow.python.data.kernel_tests import checkpoint_test_base
 from tensorflow.python.data.kernel_tests import test_base
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.framework import combinations
@@ -30,28 +27,31 @@ from tensorflow.python.ops import math_ops
 from tensorflow.python.platform import test
 
 
-def new_and_legacy_filter_fn_combinations():
+def _test_combinations():
 
-  def new_filter_fn(dataset, predicate):
+  def filter_fn(dataset, predicate):
     return dataset.filter(predicate)
 
   def legacy_filter_fn(dataset, predicate):
     return dataset.filter_with_legacy_function(predicate)
 
-  return (combinations.combine(
+  filter_combinations = combinations.combine(
       tf_api_version=[1, 2],
       mode=["eager", "graph"],
-      apply_filter=combinations.NamedObject("new_filter_fn", new_filter_fn)) +
-          combinations.combine(
-              tf_api_version=1,
-              mode=["eager", "graph"],
-              apply_filter=combinations.NamedObject("legacy_filter_fn",
-                                                    legacy_filter_fn)))
+      apply_filter=combinations.NamedObject("filter_fn", filter_fn))
+
+  legacy_filter_combinations = combinations.combine(
+      tf_api_version=1,
+      mode=["eager", "graph"],
+      apply_filter=combinations.NamedObject("legacy_filter_fn",
+                                            legacy_filter_fn))
+
+  return filter_combinations + legacy_filter_combinations
 
 
 class FilterTest(test_base.DatasetTestBase, parameterized.TestCase):
 
-  @combinations.generate(new_and_legacy_filter_fn_combinations())
+  @combinations.generate(_test_combinations())
   def testFilterDataset(self, apply_filter):
     components = (np.arange(7, dtype=np.int64),
                   np.array([[1, 2, 3]], dtype=np.int64) *
@@ -87,14 +87,14 @@ class FilterTest(test_base.DatasetTestBase, parameterized.TestCase):
     # Test an empty dataset.
     do_test(0, 1)
 
-  @combinations.generate(new_and_legacy_filter_fn_combinations())
+  @combinations.generate(_test_combinations())
   def testFilterRange(self, apply_filter):
     dataset = dataset_ops.Dataset.range(4)
     dataset = apply_filter(dataset,
                            lambda x: math_ops.not_equal(math_ops.mod(x, 3), 2))
     self.assertDatasetProduces(dataset, expected_output=[0, 1, 3])
 
-  @combinations.generate(new_and_legacy_filter_fn_combinations())
+  @combinations.generate(_test_combinations())
   def testFilterDict(self, apply_filter):
     dataset = dataset_ops.Dataset.range(10).map(
         lambda x: {"foo": x * 2, "bar": x**2})
@@ -104,7 +104,7 @@ class FilterTest(test_base.DatasetTestBase, parameterized.TestCase):
         dataset,
         expected_output=[(i * 2 + i**2) for i in range(10) if not (i**2) % 2])
 
-  @combinations.generate(new_and_legacy_filter_fn_combinations())
+  @combinations.generate(_test_combinations())
   def testUseStepContainerInFilter(self, apply_filter):
     input_data = np.array([[1, 2, 3], [4, 5, 6]], dtype=np.int64)
 
@@ -119,7 +119,7 @@ class FilterTest(test_base.DatasetTestBase, parameterized.TestCase):
     dataset = apply_filter(dataset, _predicate)
     self.assertDatasetProduces(dataset, expected_output=[input_data[0]])
 
-  @combinations.generate(new_and_legacy_filter_fn_combinations())
+  @combinations.generate(_test_combinations())
   def testSparse(self, apply_filter):
 
     def _map_fn(i):
@@ -137,7 +137,7 @@ class FilterTest(test_base.DatasetTestBase, parameterized.TestCase):
     self.assertDatasetProduces(
         dataset, expected_output=[_map_fn(i * 2)[0] for i in range(5)])
 
-  @combinations.generate(new_and_legacy_filter_fn_combinations())
+  @combinations.generate(_test_combinations())
   def testShortCircuit(self, apply_filter):
     dataset = dataset_ops.Dataset.zip(
         (dataset_ops.Dataset.range(10),
@@ -146,7 +146,7 @@ class FilterTest(test_base.DatasetTestBase, parameterized.TestCase):
     self.assertDatasetProduces(
         dataset, expected_output=[(i, True) for i in range(10)])
 
-  @combinations.generate(new_and_legacy_filter_fn_combinations())
+  @combinations.generate(_test_combinations())
   def testParallelFilters(self, apply_filter):
     dataset = dataset_ops.Dataset.range(10)
     dataset = apply_filter(dataset, lambda x: math_ops.equal(x % 2, 0))
@@ -154,6 +154,60 @@ class FilterTest(test_base.DatasetTestBase, parameterized.TestCase):
     self.assertEqual([0 for _ in range(10)],
                      self.evaluate(
                          [next_element() for next_element in next_elements]))
+
+  @combinations.generate(test_base.default_test_combinations())
+  def testName(self):
+    dataset = dataset_ops.Dataset.from_tensors(42).filter(
+        lambda x: True, name="filter")
+    self.assertDatasetProduces(dataset, [42])
+
+
+class FilterCheckpointTest(checkpoint_test_base.CheckpointTestBase,
+                           parameterized.TestCase):
+
+  def _build_filter_range_graph(self, div):
+    return dataset_ops.Dataset.range(100).filter(
+        lambda x: math_ops.not_equal(math_ops.mod(x, div), 2))
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         checkpoint_test_base.default_test_combinations()))
+  def test(self, verify_fn):
+    div = 3
+    num_outputs = sum(x % 3 != 2 for x in range(100))
+    verify_fn(self, lambda: self._build_filter_range_graph(div), num_outputs)
+
+  def _build_filter_dict_graph(self):
+    return dataset_ops.Dataset.range(10).map(lambda x: {
+        "foo": x * 2,
+        "bar": x**2
+    }).filter(lambda d: math_ops.equal(d["bar"] % 2, 0)).map(
+        lambda d: d["foo"] + d["bar"])
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         checkpoint_test_base.default_test_combinations()))
+  def testDict(self, verify_fn):
+    num_outputs = sum((x**2) % 2 == 0 for x in range(10))
+    verify_fn(self, self._build_filter_dict_graph, num_outputs)
+
+  def _build_sparse_filter(self):
+
+    def _map_fn(i):
+      return sparse_tensor.SparseTensor(
+          indices=[[0, 0]], values=(i * [1]), dense_shape=[1, 1]), i
+
+    def _filter_fn(_, i):
+      return math_ops.equal(i % 2, 0)
+
+    return dataset_ops.Dataset.range(10).map(_map_fn).filter(_filter_fn).map(
+        lambda x, i: x)
+
+  @combinations.generate(
+      combinations.times(test_base.default_test_combinations(),
+                         checkpoint_test_base.default_test_combinations()))
+  def testSparse(self, verify_fn):
+    verify_fn(self, self._build_sparse_filter, num_outputs=5)
 
 
 if __name__ == "__main__":

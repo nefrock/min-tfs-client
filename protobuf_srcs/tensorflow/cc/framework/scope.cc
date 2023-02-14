@@ -311,7 +311,7 @@ Status Scope::ToGraphDef(GraphDef* gdef) const {
     return *impl()->status_;
   }
   graph()->ToGraphDef(gdef);
-  return Status::OK();
+  return OkStatus();
 }
 
 Status Scope::ToGraph(Graph* g, GraphConstructorOptions opts) const {
@@ -499,7 +499,7 @@ CompositeOpScopes Scope::GetCompositeOpScopes(
 }
 
 Status Scope::DoShapeInference(Node* node) const {
-  if (impl_->disable_shape_inference_) return Status::OK();
+  if (impl_->disable_shape_inference_) return OkStatus();
   return impl_->refiner_->AddNode(node);
 }
 
@@ -537,7 +537,7 @@ Status CreateOutputWithScope(string op_name,
   TF_RETURN_IF_ERROR(scope.status());
   const auto unique_name = scope.GetUniqueNameForOp(op_name);
   auto builder = ::tensorflow::NodeBuilder(unique_name, op_name);
-  for (auto input : inputs) {
+  for (const auto& input : inputs) {
     TF_RETURN_IF_ERROR(scope.status());
     builder = builder.Input(input.node());
   }
@@ -547,7 +547,7 @@ Status CreateOutputWithScope(string op_name,
   scope.UpdateStatus(builder.Finalize(scope.graph(), &ret));
   TF_RETURN_IF_ERROR(scope.status());
   *output = Output(ret, 0);
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace tensorflow

@@ -47,7 +47,7 @@ std::vector<std::unique_ptr<HloModule>> HloModuleGroup::ConsumeModules() {
   return ret_modules;
 }
 
-string HloModuleGroup::ToString() const {
+std::string HloModuleGroup::ToString() const {
   std::ostringstream s;
   s << "HloModuleGroup " << name() << "\n\n";
   for (const HloModule* module : modules()) {
@@ -86,12 +86,14 @@ HloModuleGroupProto HloModuleGroup::ToProto() const {
 }
 
 void HloModuleGroup::push_back(std::unique_ptr<HloModule> module) {
+  module->metadata()->set_module_group_name(name());
   modules_.push_back(std::move(module));
   module_ptrs_.push_back(modules_.back().get());
 }
 
 void HloModuleGroup::ReplaceModule(int index,
                                    std::unique_ptr<HloModule> module) {
+  modules_.at(index)->MoveMetadataToModule(module.get());
   modules_.at(index) = std::move(module);
   module_ptrs_.at(index) = modules_.at(index).get();
 }

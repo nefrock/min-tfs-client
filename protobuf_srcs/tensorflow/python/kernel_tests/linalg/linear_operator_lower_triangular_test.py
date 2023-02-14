@@ -13,10 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+from tensorflow.python.framework import config
 from tensorflow.python.framework import test_util
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import math_ops
@@ -66,7 +63,7 @@ class LinearOperatorLowerTriangularTest(
     return operator, matrix
 
   def test_assert_non_singular(self):
-    # Singlular matrix with one positive eigenvalue and one zero eigenvalue.
+    # Singular matrix with one positive eigenvalue and one zero eigenvalue.
     with self.cached_session():
       tril = [[1., 0.], [1., 0.]]
       operator = linalg.LinearOperatorLowerTriangular(tril)
@@ -86,7 +83,7 @@ class LinearOperatorLowerTriangularTest(
     self.assertFalse(operator.is_self_adjoint)
 
   def test_tril_must_have_at_least_two_dims_or_raises(self):
-    with self.assertRaisesRegexp(ValueError, "at least 2 dimensions"):
+    with self.assertRaisesRegex(ValueError, "at least 2 dimensions"):
       linalg.LinearOperatorLowerTriangular([1.])
 
   def test_triangular_diag_matmul(self):
@@ -119,7 +116,16 @@ class LinearOperatorLowerTriangularTest(
         tril, is_non_singular=True)
     self.check_tape_safe(operator)
 
+  def test_convert_variables_to_tensors(self):
+    tril = variables_module.Variable([[1., 0.], [0., 1.]])
+    operator = linalg_lib.LinearOperatorLowerTriangular(
+        tril, is_non_singular=True)
+    with self.cached_session() as sess:
+      sess.run([tril.initializer])
+      self.check_convert_variables_to_tensors(operator)
+
 
 if __name__ == "__main__":
+  config.enable_tensor_float_32_execution(False)
   linear_operator_test_util.add_tests(LinearOperatorLowerTriangularTest)
   test.main()

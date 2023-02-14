@@ -77,14 +77,14 @@ class GpuFtzDisabledTest : public GpuFtzTest {
 
 // Check that we emit mul.ftz.f32 when in ftz mode, and plain mul.f32 otherwise.
 TEST_F(GpuFtzEnabledTest, MultiplyFtz) {
-  CompileAndVerifyPtx(CreateBinaryOpModule(HloOpcode::kMultiply), R"(
+  CompileAndOptionallyVerifyPtx(CreateBinaryOpModule(HloOpcode::kMultiply), R"(
     CHECK-NOT: mul.rn.f32
     CHECK: mul.rn.ftz.f32
     CHECK-NOT: mul.rn.f32
   )");
 }
 TEST_F(GpuFtzDisabledTest, MultiplyFtz) {
-  CompileAndVerifyPtx(CreateBinaryOpModule(HloOpcode::kMultiply), R"(
+  CompileAndOptionallyVerifyPtx(CreateBinaryOpModule(HloOpcode::kMultiply), R"(
     CHECK-NOT: mul.rn.ftz.f32
     CHECK: mul.rn.f32
     CHECK-NOT: mul.rn.ftz.f32
@@ -92,28 +92,22 @@ TEST_F(GpuFtzDisabledTest, MultiplyFtz) {
 }
 
 // In NVPTX, exp(float) is implemented in libdevice, and consults __nvvm_reflect
-// to determine whether or not ftz is enabled.  The implementation uses two
-// calls to ex2.approx.  When ftz is on, we get two calls to the ftz version;
-// when ftz is off, we get one call to the ftz version and one call to the
-// regular version.
+// to determine whether or not ftz is enabled.
+// The implementation in CUDA 11 uses one ex2.approx.ftz, irrespective of ftz
+// being enabled or not. The ftz flag is reflected in the Newton iteration.
 TEST_F(GpuFtzEnabledTest, ExpFtz) {
-  CompileAndVerifyPtx(CreateUnaryOpModule(HloOpcode::kExp), R"(
-    CHECK-NOT: ex2.approx.f32
-    CHECK:     ex2.approx.ftz.f32
-    CHECK-NOT: ex2.approx.f32
-    CHECK:     ex2.approx.ftz.f32
-    CHECK-NOT: ex2.approx.f32
-    CHECK-NOT: ex2.approx.ftz.f32
+  CompileAndOptionallyVerifyPtx(CreateUnaryOpModule(HloOpcode::kExp), R"(
+    CHECK:      ex2.approx.ftz.f32
+    CHECK-NEXT: mul.rn.ftz.f32
+    CHECK-NOT:  ex2.approx.f32
   )");
 }
 
 TEST_F(GpuFtzDisabledTest, ExpFtz) {
-  CompileAndVerifyPtx(CreateUnaryOpModule(HloOpcode::kExp), R"(
-    CHECK-NOT: ex2.approx.f32
-    CHECK-DAG: ex2.approx.ftz.f32
-    CHECK-DAG: ex2.approx.f32
-    CHECK-NOT: ex2.approx.f32
-    CHECK-NOT: ex2.approx.ftz.f32
+  CompileAndOptionallyVerifyPtx(CreateUnaryOpModule(HloOpcode::kExp), R"(
+    CHECK:      ex2.approx.ftz.f32
+    CHECK-NEXT: mul.rn.f32
+    CHECK-NOT:  ex2.approx.f32
   )");
 }
 

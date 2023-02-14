@@ -16,20 +16,28 @@ limitations under the License.
 #include "tensorflow/cc/saved_model/reader.h"
 
 #include "tensorflow/cc/saved_model/constants.h"
+#include "tensorflow/cc/saved_model/metrics.h"
 #include "tensorflow/cc/saved_model/tag_constants.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/lib/io/path.h"
 #include "tensorflow/core/lib/strings/str_util.h"
+#include "tensorflow/core/platform/path.h"
+#include "tensorflow/core/platform/resource_loader.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
 namespace {
 
-constexpr char kTestDataPbTxt[] =
-    "cc/saved_model/testdata/half_plus_two_pbtxt/00000123";
-constexpr char kTestDataSharded[] =
-    "cc/saved_model/testdata/half_plus_two/00000123";
+string TestDataPbTxt() {
+  return io::JoinPath("tensorflow", "cc", "saved_model", "testdata",
+                      "half_plus_two_pbtxt", "00000123");
+}
+
+string TestDataSharded() {
+  return io::JoinPath("tensorflow", "cc", "saved_model", "testdata",
+                      "half_plus_two", "00000123");
+}
 
 class ReaderTest : public ::testing::Test {
  protected:
@@ -49,8 +57,7 @@ class ReaderTest : public ::testing::Test {
 TEST_F(ReaderTest, TagMatch) {
   MetaGraphDef meta_graph_def;
 
-  const string export_dir =
-      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataSharded);
+  const string export_dir = GetDataDependencyFilepath(TestDataSharded());
   TF_ASSERT_OK(ReadMetaGraphDefFromSavedModel(export_dir, {kSavedModelTagServe},
                                               &meta_graph_def));
   CheckMetaGraphDef(meta_graph_def);
@@ -59,8 +66,7 @@ TEST_F(ReaderTest, TagMatch) {
 TEST_F(ReaderTest, NoTagMatch) {
   MetaGraphDef meta_graph_def;
 
-  const string export_dir =
-      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataSharded);
+  const string export_dir = GetDataDependencyFilepath(TestDataSharded());
   Status st = ReadMetaGraphDefFromSavedModel(export_dir, {"missing-tag"},
                                              &meta_graph_def);
   EXPECT_FALSE(st.ok());
@@ -73,8 +79,7 @@ TEST_F(ReaderTest, NoTagMatch) {
 TEST_F(ReaderTest, NoTagMatchMultiple) {
   MetaGraphDef meta_graph_def;
 
-  const string export_dir =
-      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataSharded);
+  const string export_dir = GetDataDependencyFilepath(TestDataSharded());
   Status st = ReadMetaGraphDefFromSavedModel(
       export_dir, {kSavedModelTagServe, "missing-tag"}, &meta_graph_def);
   EXPECT_FALSE(st.ok());
@@ -87,8 +92,7 @@ TEST_F(ReaderTest, NoTagMatchMultiple) {
 TEST_F(ReaderTest, PbtxtFormat) {
   MetaGraphDef meta_graph_def;
 
-  const string export_dir =
-      io::JoinPath(testing::TensorFlowSrcRoot(), kTestDataPbTxt);
+  const string export_dir = GetDataDependencyFilepath(TestDataPbTxt());
   TF_ASSERT_OK(ReadMetaGraphDefFromSavedModel(export_dir, {kSavedModelTagServe},
                                               &meta_graph_def));
   CheckMetaGraphDef(meta_graph_def);
@@ -97,11 +101,40 @@ TEST_F(ReaderTest, PbtxtFormat) {
 TEST_F(ReaderTest, InvalidExportPath) {
   MetaGraphDef meta_graph_def;
 
-  const string export_dir =
-      io::JoinPath(testing::TensorFlowSrcRoot(), "missing-path");
+  const string export_dir = GetDataDependencyFilepath("missing-path");
   Status st = ReadMetaGraphDefFromSavedModel(export_dir, {kSavedModelTagServe},
                                              &meta_graph_def);
   EXPECT_FALSE(st.ok());
+}
+
+TEST_F(ReaderTest, ReadSavedModelDebugInfoIfPresent) {
+  const string export_dir = GetDataDependencyFilepath(TestDataSharded());
+  std::unique_ptr<GraphDebugInfo> debug_info_proto;
+  TF_ASSERT_OK(ReadSavedModelDebugInfoIfPresent(export_dir, &debug_info_proto));
+}
+
+TEST_F(ReaderTest, MetricsNotUpdatedFailedRead) {
+  MetaGraphDef meta_graph_def;
+  const int read_count_v1 = metrics::SavedModelRead("1").value();
+  const int read_count_v2 = metrics::SavedModelRead("2").value();
+
+  const string export_dir = GetDataDependencyFilepath("missing-path");
+  Status st =
+      ReadMetaGraphDefFromSavedModel(export_dir, {"serve"}, &meta_graph_def);
+
+  EXPECT_FALSE(st.ok());
+  EXPECT_EQ(metrics::SavedModelRead("1").value(), read_count_v1);
+  EXPECT_EQ(metrics::SavedModelRead("2").value(), read_count_v2);
+}
+
+TEST_F(ReaderTest, MetricsUpdatedSuccessfulRead) {
+  MetaGraphDef meta_graph_def;
+  const int read_count_v1 = metrics::SavedModelRead("1").value();
+
+  const string export_dir = GetDataDependencyFilepath(TestDataSharded());
+  Status st =
+      ReadMetaGraphDefFromSavedModel(export_dir, {"serve"}, &meta_graph_def);
+  EXPECT_EQ(metrics::SavedModelRead("1").value(), read_count_v1 + 1);
 }
 
 }  // namespace

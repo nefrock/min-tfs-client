@@ -19,6 +19,7 @@ limitations under the License.
 
 #include "absl/strings/match.h"
 #include "tensorflow/c/c_api_internal.h"
+#include "tensorflow/c/tf_buffer_internal.h"
 #include "tensorflow/core/framework/attr_value_util.h"
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/graph_to_functiondef.h"
@@ -27,8 +28,8 @@ limitations under the License.
 #include "tensorflow/core/framework/tensor.pb.h"  // NOLINT
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/graph/graph.h"
-#include "tensorflow/core/lib/strings/base64.h"
-#include "tensorflow/core/lib/strings/strcat.h"
+#include "tensorflow/core/platform/base64.h"
+#include "tensorflow/core/platform/strcat.h"
 
 using tensorflow::errors::InvalidArgument;
 
@@ -40,7 +41,7 @@ Status ValidateNonRefOutput(const Node* node, int idx) {
   return IsRefType(dt)
              ? InvalidArgument("Output ", idx, " of node '", node->name(),
                                "' has a reference type ", DataTypeString(dt))
-             : Status::OK();
+             : OkStatus();
 }
 
 // Converts `ninputs` and `inputs` into `inputs_tensors` and `input_nodes` and
@@ -51,10 +52,10 @@ Status ProcessInputs(
     const TF_Graph* fn_body, const char* fn_name, int ninputs,
     const TF_Output* inputs, std::vector<OutputTensor>* input_tensors,
     std::unordered_map<const Node*, std::vector<int>>* input_nodes)
-    EXCLUSIVE_LOCKS_REQUIRED(fn_body->mu) {
+    TF_EXCLUSIVE_LOCKS_REQUIRED(fn_body->mu) {
   input_tensors->reserve(ninputs);
   for (int i = 0; i < ninputs; ++i) {
-    Node* node = &inputs[i].oper->node;
+    Node* node = inputs[i].oper ? &inputs[i].oper->node : nullptr;
     int idx = inputs[i].index;
 
     TF_RETURN_WITH_CONTEXT_IF_ERROR(
@@ -79,7 +80,7 @@ Status ProcessInputs(
       indices.push_back(idx);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Converts `noutputs` and `outputs` into `outputs_tensors` and does various
@@ -87,10 +88,10 @@ Status ProcessInputs(
 Status ProcessOutputs(const TF_Graph* fn_body, const char* fn_name,
                       int noutputs, const TF_Output* outputs,
                       std::vector<OutputTensor>* output_tensors)
-    EXCLUSIVE_LOCKS_REQUIRED(fn_body->mu) {
+    TF_EXCLUSIVE_LOCKS_REQUIRED(fn_body->mu) {
   output_tensors->reserve(noutputs);
   for (int i = 0; i < noutputs; ++i) {
-    Node* node = &outputs[i].oper->node;
+    Node* node = outputs[i].oper ? &outputs[i].oper->node : nullptr;
     int idx = outputs[i].index;
     TF_RETURN_WITH_CONTEXT_IF_ERROR(
         fn_body->graph.IsValidOutputTensor(node, idx),
@@ -101,7 +102,7 @@ Status ProcessOutputs(const TF_Graph* fn_body, const char* fn_name,
                                     fn_name, "'");
     output_tensors->emplace_back(node, idx);
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 // Populates `body_nodes` with the nodes that will become function's body.
@@ -111,7 +112,7 @@ Status ComputeBodyNodes(
     const TF_Operation* const* opers,
     const std::unordered_map<const Node*, std::vector<int>>& input_nodes,
     std::vector<const Node*>* body_nodes)
-    EXCLUSIVE_LOCKS_REQUIRED(fn_body->mu) {
+    TF_EXCLUSIVE_LOCKS_REQUIRED(fn_body->mu) {
   if (num_opers == -1) {
     for (const Node* node : fn_body->graph.op_nodes()) {
       const auto& iter = input_nodes.find(node);
@@ -138,7 +139,7 @@ Status ComputeBodyNodes(
       body_nodes->push_back(node);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 }  // namespace
@@ -155,7 +156,7 @@ TF_Function* TF_GraphToFunctionWithControlOutputs(
     int ncontrol_outputs, const TF_Operation* const* control_outputs,
     const char* const* control_output_names, const TF_FunctionOptions* opts,
     const char* description, TF_Status* status) {
-  tensorflow::mutex_lock l(*const_cast<tensorflow::mutex*>(&fn_body->mu));
+  tensorflow::mutex_lock l(fn_body->mu);
 
   // Process inputs.
   std::vector<tensorflow::OutputTensor> input_tensors;
@@ -196,6 +197,7 @@ TF_Function* TF_GraphToFunctionWithControlOutputs(
 
   // Compute body nodes.
   std::vector<const Node*> control_output_nodes;
+  control_output_nodes.reserve(ncontrol_outputs);
   for (int i = 0; i < ncontrol_outputs; ++i) {
     control_output_nodes.push_back(&control_outputs[i]->node);
   }
@@ -213,6 +215,11 @@ TF_Function* TF_GraphToFunctionWithControlOutputs(
     TF_DeleteFunction(tf_function);
     return nullptr;
   }
+
+  for (const Node* n : fn_body->graph.nodes()) {
+    tf_function->stack_traces[n->name()] = n->GetStackTrace();
+  }
+
   return tf_function;
 }
 
@@ -275,7 +282,7 @@ int TF_GraphGetFunctions(TF_Graph* g, TF_Function** funcs, int max_func,
     func->fdef = lib.function(i);
     funcs[i] = func;
   }
-  status->status = tensorflow::Status::OK();
+  status->status = ::tensorflow::OkStatus();
   return len;
 }
 
@@ -293,7 +300,7 @@ TF_Function* TF_FunctionImportFunctionDef(const void* proto, size_t proto_len,
     TF_DeleteFunction(func);
     return nullptr;
   }
-  status->status = tensorflow::Status::OK();
+  status->status = ::tensorflow::OkStatus();
   return func;
 }
 
@@ -308,7 +315,7 @@ void TF_FunctionSetAttrValueProto(TF_Function* func, const char* attr_name,
     return;
   }
   (*func->fdef.mutable_attr())[string(attr_name)] = attr_value;
-  status->status = tensorflow::Status::OK();
+  status->status = ::tensorflow::OkStatus();
 }
 
 void TF_FunctionGetAttrValueProto(TF_Function* func, const char* attr_name,

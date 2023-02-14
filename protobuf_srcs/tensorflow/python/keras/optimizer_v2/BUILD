@@ -1,14 +1,22 @@
 # Description:
 #   Contains the Keras OptimizerV2 API (internal TensorFlow version).
 
-load("//tensorflow:tensorflow.bzl", "cuda_py_test")
-
 package(
-    default_visibility = ["//visibility:public"],
-    licenses = ["notice"],  # Apache 2.0
+    # TODO(scottzhu): Remove non-keras deps from TF.
+    default_visibility = [
+        "//tensorflow/python:__pkg__",
+        "//tensorflow/python/distribute:__pkg__",
+        "//tensorflow/python/keras:__subpackages__",
+        "//tensorflow/python/training/tracking:__pkg__",
+    ],
+    licenses = ["notice"],
 )
 
-exports_files(["LICENSE"])
+filegroup(
+    name = "all_py_srcs",
+    srcs = glob(["*.py"]),
+    visibility = ["//tensorflow/python/keras/google/private_tf_api_test:__pkg__"],
+)
 
 py_library(
     name = "optimizer_v2",
@@ -22,8 +30,9 @@ py_library(
         "nadam.py",
         "optimizer_v2.py",
         "rmsprop.py",
+        "utils.py",
     ],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     deps = [
         ":learning_rate_schedule",
         "//tensorflow/python:control_flow_ops",
@@ -33,14 +42,18 @@ py_library(
         "//tensorflow/python:state_ops",
         "//tensorflow/python:variable_scope",
         "//tensorflow/python:variables",
+        "//tensorflow/python/distribute:central_storage_strategy",
         "//tensorflow/python/distribute:distribute_lib",
+        "//tensorflow/python/distribute:parameter_server_strategy",
+        "//tensorflow/python/distribute:parameter_server_strategy_v2",
         "//tensorflow/python/distribute:reduce_util",
         "//tensorflow/python/distribute:values",
         "//tensorflow/python/keras:backend",
         "//tensorflow/python/keras:backend_config",
-        "//tensorflow/python/keras:base_layer_utils",
-        "//tensorflow/python/keras:initializers",
-        "//tensorflow/python/keras:tf_utils",
+        "//tensorflow/python/keras/engine:base_layer_utils",
+        "//tensorflow/python/keras/initializers",
+        "//tensorflow/python/keras/utils:layer_utils",
+        "//tensorflow/python/keras/utils:tf_utils",
     ],
 )
 
@@ -49,210 +62,27 @@ py_library(
     srcs = [
         "learning_rate_schedule.py",
     ],
-    srcs_version = "PY2AND3",
+    srcs_version = "PY3",
     deps = [
+        "//tensorflow/python:array_ops",
         "//tensorflow/python:control_flow_ops",
         "//tensorflow/python:framework",
         "//tensorflow/python:math_ops",
         "//tensorflow/python:random_ops",
-        "//tensorflow/python/keras:generic_utils",
+        "//tensorflow/python/keras/utils:generic_utils",
     ],
 )
 
-cuda_py_test(
-    name = "adagrad_test",
-    size = "medium",
-    srcs = ["adagrad_test.py"],
-    additional_deps = [
-        ":optimizer_v2",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:embedding_ops",
-        "//tensorflow/python:platform_test",
-        "//tensorflow/python:framework",
+py_library(
+    name = "legacy_learning_rate_decay",
+    srcs = ["legacy_learning_rate_decay.py"],
+    srcs_version = "PY3",
+    deps = [
+        ":learning_rate_schedule",
+        "//tensorflow/python:dtypes",
+        "//tensorflow/python:framework_ops",
         "//tensorflow/python:math_ops",
-        "//tensorflow/python:resource_variable_ops",
-        "//tensorflow/python:resources",
-        "//tensorflow/python:variables",
         "//tensorflow/python/eager:context",
+        "//tensorflow/python/util:tf_export",
     ],
-    shard_count = 4,
-)
-
-cuda_py_test(
-    name = "adam_test",
-    size = "medium",
-    srcs = ["adam_test.py"],
-    additional_deps = [
-        ":optimizer_v2",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:embedding_ops",
-        "//tensorflow/python:platform_test",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python:resource_variable_ops",
-        "//tensorflow/python:resources",
-        "//tensorflow/python:variables",
-        "//tensorflow/python/eager:context",
-    ],
-    shard_count = 4,
-)
-
-cuda_py_test(
-    name = "adamax_test",
-    size = "medium",
-    srcs = ["adamax_test.py"],
-    additional_deps = [
-        ":optimizer_v2",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:embedding_ops",
-        "//tensorflow/python:platform_test",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python:resource_variable_ops",
-        "//tensorflow/python:resources",
-        "//tensorflow/python:variables",
-        "//tensorflow/python/eager:context",
-    ],
-    shard_count = 4,
-    tags = ["no_rocm"],
-)
-
-cuda_py_test(
-    name = "adadelta_test",
-    size = "medium",
-    srcs = ["adadelta_test.py"],
-    additional_deps = [
-        ":optimizer_v2",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:embedding_ops",
-        "//tensorflow/python:platform_test",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python:resource_variable_ops",
-        "//tensorflow/python:resources",
-        "//tensorflow/python:variables",
-        "//tensorflow/python/eager:context",
-    ],
-    shard_count = 4,
-)
-
-cuda_py_test(
-    name = "ftrl_test",
-    size = "medium",
-    srcs = ["ftrl_test.py"],
-    additional_deps = [
-        ":optimizer_v2",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:embedding_ops",
-        "//tensorflow/python:platform_test",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python:resource_variable_ops",
-        "//tensorflow/python:resources",
-        "//tensorflow/python:variables",
-        "//tensorflow/python/eager:context",
-    ],
-    shard_count = 4,
-)
-
-cuda_py_test(
-    name = "gradient_descent_test",
-    size = "medium",
-    srcs = ["gradient_descent_test.py"],
-    additional_deps = [
-        ":optimizer_v2",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:embedding_ops",
-        "//tensorflow/python:platform_test",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python:resource_variable_ops",
-        "//tensorflow/python:resources",
-        "//tensorflow/python:variables",
-        "//tensorflow/python/eager:context",
-    ],
-    shard_count = 4,
-)
-
-cuda_py_test(
-    name = "nadam_test",
-    size = "medium",
-    srcs = ["nadam_test.py"],
-    additional_deps = [
-        ":optimizer_v2",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:embedding_ops",
-        "//tensorflow/python:platform_test",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:math_ops",
-        "//tensorflow/python:resource_variable_ops",
-        "//tensorflow/python:resources",
-        "//tensorflow/python:variables",
-        "//tensorflow/python/eager:context",
-    ],
-    shard_count = 4,
-)
-
-cuda_py_test(
-    name = "optimizer_v2_test",
-    size = "medium",
-    srcs = ["optimizer_v2_test.py"],
-    additional_deps = [
-        ":optimizer_v2",
-        "@absl_py//absl/testing:parameterized",
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:clip_ops",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python:gradients",
-        "//tensorflow/python:resource_variable_ops",
-        "//tensorflow/python:state_ops",
-        "//tensorflow/python:variables",
-        "//tensorflow/python/eager:def_function",
-        "//tensorflow/python/keras",
-    ],
-    shard_count = 8,
-    tags = [
-        "manual",
-        "no_oss",
-        "no_rocm",
-        "no_windows",
-        "notap",
-    ],
-)
-
-cuda_py_test(
-    name = "learning_rate_schedule_test",
-    size = "medium",
-    srcs = ["learning_rate_schedule_test.py"],
-    additional_deps = [
-        ":optimizer_v2",
-        "@absl_py//absl/testing:parameterized",
-        "//third_party/py/numpy",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python/keras",
-    ],
-    shard_count = 4,
-)
-
-cuda_py_test(
-    name = "rmsprop_test",
-    size = "medium",
-    srcs = ["rmsprop_test.py"],
-    additional_deps = [
-        ":optimizer_v2",
-        "@absl_py//absl/testing:parameterized",
-        "//tensorflow/python/eager:def_function",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework",
-        "//tensorflow/python:framework_test_lib",
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:clip_ops",
-        "//tensorflow/python:gradients",
-        "//tensorflow/python:resource_variable_ops",
-        "//tensorflow/python:state_ops",
-        "//tensorflow/python:variables",
-    ],
-    shard_count = 2,
 )

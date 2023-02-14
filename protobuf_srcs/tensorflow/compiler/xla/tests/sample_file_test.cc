@@ -24,9 +24,9 @@ limitations under the License.
 #include "tensorflow/compiler/xla/tests/hlo_test_base.h"
 #include "tensorflow/compiler/xla/tests/literal_test_util.h"
 #include "tensorflow/compiler/xla/types.h"
-#include "tensorflow/core/lib/io/path.h"
-#include "tensorflow/core/platform/test.h"
-#include "tensorflow/core/platform/types.h"
+#include "tensorflow/tsl/platform/path.h"
+#include "tensorflow/tsl/platform/resource_loader.h"
+#include "tensorflow/tsl/platform/test.h"
 
 namespace xla {
 namespace {
@@ -35,16 +35,15 @@ class SampleFileTest : public HloTestBase {
  protected:
   SampleFileTest()
       : HloTestBase(
-            /*test_platform=*/PlatformUtil::GetPlatform("gpu").ValueOrDie(),
-            /*reference_platform=*/PlatformUtil::GetPlatform("cpu")
-                .ValueOrDie()) {}
+            /*test_platform=*/PlatformUtil::GetPlatform("gpu").value(),
+            /*reference_platform=*/PlatformUtil::GetPlatform("cpu").value()) {}
 };
 
 TEST_F(SampleFileTest, Convolution) {
-  const string& filename = "compiler/xla/tests/isolated_convolution.hlo";
-  string test_srcdir = tensorflow::testing::TensorFlowSrcRoot();
-  EXPECT_TRUE(RunAndCompareFromFile(
-      tensorflow::io::JoinPath(test_srcdir, filename), ErrorSpec{0.01}));
+  const std::string& filename = tsl::GetDataDependencyFilepath(
+      tsl::io::JoinPath("tensorflow", "compiler", "xla", "tests",
+                        "isolated_convolution.hlo"));
+  EXPECT_TRUE(RunAndCompareFromFile(filename, ErrorSpec{0.01}));
 }
 
 }  // namespace

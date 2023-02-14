@@ -34,9 +34,6 @@ namespace tensorflow {
 
 typedef Eigen::ThreadPoolDevice CPUDevice;
 typedef Eigen::GpuDevice GPUDevice;
-#ifdef TENSORFLOW_USE_SYCL
-typedef Eigen::SyclDevice SYCLDevice;
-#endif  // TENSORFLOW_USE_SYCL
 
 #define CURRY_TYPES2(FN, arg0)   \
   FN(arg0, bool);                \
@@ -47,7 +44,7 @@ typedef Eigen::SyclDevice SYCLDevice;
   FN(arg0, int8);                \
   FN(arg0, int16);               \
   FN(arg0, int32);               \
-  FN(arg0, int64);               \
+  FN(arg0, int64_t);             \
   FN(arg0, Eigen::half);         \
   FN(arg0, float);               \
   FN(arg0, double);              \
@@ -96,20 +93,21 @@ void CastOpBase::Compute(OpKernelContext* ctx) {
   const Tensor& inp = ctx->input(0);
   if (work_ == nullptr) {
     ctx->set_output(0, inp);
-  } else {
+  } else if (external_src_dtype_ != src_dtype_ ||
+             external_dst_dtype_ != dst_dtype_) {
     Tensor in;
-    if (external_src_dtype_ != src_dtype_) {
-      // If the type is a quantized type we need to do a bitcast since the
-      // src_dtype_ is different from external_src_type_.
-      OP_REQUIRES_OK(ctx, in.BitcastFrom(inp, src_dtype_, inp.shape()));
-    } else {
-      in = inp;
-    }
+    // If the type is a quantized type we need to do a bitcast since the
+    // src_dtype_ is different from external_src_type_.
+    OP_REQUIRES_OK(ctx, in.BitcastFrom(inp, src_dtype_, inp.shape()));
     Tensor* out = nullptr;
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, in.shape(), &out));
     out->set_dtype(dst_dtype_);
     work_(ctx, in, out, use_truncation_);
     out->set_dtype(external_dst_dtype_);
+  } else {
+    Tensor* out = nullptr;
+    OP_REQUIRES_OK(ctx, ctx->allocate_output(0, inp.shape(), &out));
+    work_(ctx, inp, out, use_truncation_);
   }
 }
 
@@ -126,7 +124,7 @@ CpuCastOp::CpuCastOp(OpKernelConstruction* ctx) : CastOpBase(ctx) {
 Status CpuCastOp::Prepare() {
   if (external_src_dtype_ == external_dst_dtype_) {
     work_ = nullptr;  // Identity
-    return Status::OK();
+    return OkStatus();
   }
   if (src_dtype_ == DT_BOOL) {
     work_ = GetCpuCastFromBool(dst_dtype_);
@@ -165,7 +163,7 @@ Status CpuCastOp::Prepare() {
   // vectorized versions (not the least based on F16C for Haswell
   // or newer).
 
-  return work_ == nullptr ? Unimplemented() : Status::OK();
+  return work_ == nullptr ? Unimplemented() : OkStatus();
 }
 
 #if (defined(GOOGLE_CUDA) && GOOGLE_CUDA) || \
@@ -180,7 +178,7 @@ class GpuCastOp : public CastOpBase {
   Status Prepare() {
     if (external_src_dtype_ == external_dst_dtype_) {
       work_ = nullptr;  // Identity
-      return Status::OK();
+      return OkStatus();
     }
     if (src_dtype_ == DT_BOOL) {
       work_ = GetGpuCastFromBool(dst_dtype_);
@@ -214,7 +212,7 @@ class GpuCastOp : public CastOpBase {
       work_ = GetGpuCastFromBfloat(dst_dtype_);
     }
 
-    return work_ == nullptr ? Unimplemented() : Status::OK();
+    return work_ == nullptr ? Unimplemented() : OkStatus();
   }
 };
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -232,70 +230,29 @@ REGISTER_KERNEL_BUILDER(Name("Cast").Device(DEVICE_CPU), CpuCastOp);
                               .Device(DEVICE_GPU),             \
                           GpuCastOp)
 
+#if !defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 CURRY_TYPES2(REGISTER_CAST_GPU, bool);
-CURRY_TYPES2(REGISTER_CAST_GPU, uint8);
-CURRY_TYPES2(REGISTER_CAST_GPU, uint16);
-CURRY_TYPES2(REGISTER_CAST_GPU, uint32);
-CURRY_TYPES2(REGISTER_CAST_GPU, uint64);
 CURRY_TYPES2(REGISTER_CAST_GPU, int8);
 CURRY_TYPES2(REGISTER_CAST_GPU, int16);
 CURRY_TYPES2(REGISTER_CAST_GPU, int32);
 CURRY_TYPES2(REGISTER_CAST_GPU, int64);
+CURRY_TYPES2(REGISTER_CAST_GPU, uint8);
+CURRY_TYPES2(REGISTER_CAST_GPU, uint16);
+CURRY_TYPES2(REGISTER_CAST_GPU, uint32);
+CURRY_TYPES2(REGISTER_CAST_GPU, uint64);
 CURRY_TYPES2(REGISTER_CAST_GPU, Eigen::half);
 CURRY_TYPES2(REGISTER_CAST_GPU, float);
 CURRY_TYPES2(REGISTER_CAST_GPU, double);
 CURRY_TYPES2(REGISTER_CAST_GPU, std::complex<float>);
 CURRY_TYPES2(REGISTER_CAST_GPU, std::complex<double>);
+#endif
+
 REGISTER_CAST_GPU(float, bfloat16);
 REGISTER_CAST_GPU(bfloat16, float);
 
 #undef REGISTER_CAST_GPU
 #endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
-#ifdef TENSORFLOW_USE_SYCL
-class SyclCastOp : public CastOpBase {
- public:
-  explicit SyclCastOp(OpKernelConstruction* ctx) : CastOpBase(ctx) {
-    OP_REQUIRES_OK(ctx, Prepare());
-  }
-
- private:
-  Status Prepare() {
-    if (external_src_dtype_ == external_dst_dtype_) {
-      work_ = nullptr;  // Identity
-      return Status::OK();
-    }
-    if (src_dtype_ == DT_BOOL) {
-      work_ = GetSyclCastFromBool(dst_dtype_);
-    } else if (src_dtype_ == DT_INT32) {
-      work_ = GetSyclCastFromInt32(dst_dtype_);
-    } else if (src_dtype_ == DT_INT64) {
-      work_ = GetSyclCastFromInt64(dst_dtype_);
-    } else if (src_dtype_ == DT_FLOAT) {
-      work_ = GetSyclCastFromFloat(dst_dtype_);
-    } else if (src_dtype_ == DT_DOUBLE) {
-      work_ = GetSyclCastFromDouble(dst_dtype_);
-    }
-
-    return work_ == nullptr ? Unimplemented() : Status::OK();
-  }
-};
-
-#define REGISTER_CAST_SYCL(srctype, dsttype)                   \
-  REGISTER_KERNEL_BUILDER(Name("Cast")                         \
-                              .TypeConstraint<srctype>("SrcT") \
-                              .TypeConstraint<dsttype>("DstT") \
-                              .Device(DEVICE_SYCL),            \
-                          SyclCastOp)
-CURRY_TYPES2(REGISTER_CAST_SYCL, bool);
-CURRY_TYPES2(REGISTER_CAST_SYCL, int32);
-CURRY_TYPES2(REGISTER_CAST_SYCL, int64);
-CURRY_TYPES2(REGISTER_CAST_SYCL, float);
-CURRY_TYPES2(REGISTER_CAST_SYCL, double);
-
-#undef REGISTER_CAST_SYCL
-
-#endif  // TENSORFLOW_USE_SYCL
 
 #undef CURRY_TYPES2
 

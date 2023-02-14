@@ -13,10 +13,6 @@
 # ==============================================================================
 """Implementation of tf.metrics module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.distribute import distribution_strategy_context
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
@@ -202,8 +198,9 @@ def _maybe_expand_labels(labels, predictions):
         if predictions_rank == labels_rank + 1:
           return array_ops.expand_dims(labels, -1, name=scope)
         raise ValueError(
-            'Unexpected labels shape %s for predictions shape %s.' %
-            (labels.get_shape(), predictions.get_shape()))
+            f'Unexpected labels shape {labels.get_shape()} for predictions '
+            f'shape {predictions.get_shape()}. Predictions rank should be the '
+            'same rank as labels rank or labels rank plus one .')
 
     # Otherwise, use dynamic shape.
     return control_flow_ops.cond(
@@ -284,14 +281,14 @@ def _aggregate_across_replicas(metrics_collections, metric_value_fn, *args):
     if hasattr(distribution.extended, '_outer_control_flow_context'):
       # If there was an outer context captured before this method was called,
       # then we enter that context to create the metric value op. If the
-      # caputred context is `None`, ops.control_dependencies(None) gives the
+      # captured context is `None`, ops.control_dependencies(None) gives the
       # desired behavior. Else we use `Enter` and `Exit` to enter and exit the
       # captured context.
       # This special handling is needed because sometimes the metric is created
       # inside a while_loop (and perhaps a TPU rewrite context). But we don't
       # want the value op to be evaluated every step or on the TPU. So we
       # create it outside so that it can be evaluated at the end on the host,
-      # once the update ops have been evaluted.
+      # once the update ops have been evaluated.
 
       # pylint: disable=protected-access
       if distribution.extended._outer_control_flow_context is None:
@@ -354,6 +351,91 @@ def mean(values,
       or if either `metrics_collections` or `updates_collections` are not a list
       or tuple.
     RuntimeError: If eager execution is enabled.
+
+  @compatibility(TF2)
+  `tf.compat.v1.metrics.mean` is not compatible with eager
+  execution or `tf.function`.
+  Please use `tf.keras.metrics.Mean` instead for TF2 migration. After
+  instantiating a `tf.keras.metrics.Mean` object, you can first call the
+  `update_state()` method to record the new values, and then call the
+  `result()` method to get the mean eagerly. You can also attach it to a
+  Keras model with the `add_metric` method.  Please refer to the [migration
+  guide](https://www.tensorflow.org/guide/migrate#new-style_metrics_and_losses)
+  for more details.
+
+  #### Structural Mapping to TF2
+
+  Before:
+
+  ```python
+  mean, update_op = tf.compat.v1.metrics.mean(
+    values=values,
+    weights=weights,
+    metrics_collections=metrics_collections,
+    update_collections=update_collections,
+    name=name)
+  ```
+
+  After:
+
+  ```python
+   m = tf.keras.metrics.Mean(
+     name=name)
+
+   m.update_state(
+     values=values,
+     sample_weight=weights)
+
+   mean = m.result()
+  ```
+
+  #### How to Map Arguments
+
+  | TF1 Arg Name          | TF2 Arg Name    | Note                       |
+  | :-------------------- | :-------------- | :------------------------- |
+  | `values`              | `values`        | In `update_state()` method |
+  | `weights`             | `sample_weight` | In `update_state()` method |
+  | `metrics_collections` | Not supported   | Metrics should be tracked  |
+  :                       :                 : explicitly or with Keras   :
+  :                       :                 : APIs, for example,         :
+  :                       :                 : [add_metric][add_metric],  :
+  :                       :                 : instead of via collections :
+  | `updates_collections` | Not supported   | -                          |
+  | `name`                | `name`          | In constructor             |
+
+  [add_metric]:https://www.tensorflow.org/api_docs/python/tf/keras/layers/Layer#add_metric
+
+
+  #### Before & After Usage Example
+
+  Before:
+
+  >>> g = tf.Graph()
+  >>> with g.as_default():
+  ...   values = [1, 2, 3]
+  ...   mean, update_op = tf.compat.v1.metrics.mean(values)
+  ...   global_init = tf.compat.v1.global_variables_initializer()
+  ...   local_init = tf.compat.v1.local_variables_initializer()
+  >>> sess = tf.compat.v1.Session(graph=g)
+  >>> sess.run([global_init, local_init])
+  >>> sess.run(update_op)
+  >>> sess.run(mean)
+  2.0
+
+
+  After:
+
+  >>> m = tf.keras.metrics.Mean()
+  >>> m.update_state([1, 2, 3])
+  >>> m.result().numpy()
+  2.0
+
+  ```python
+  # Used within Keras model
+  model.add_metric(tf.keras.metrics.Mean()(values))
+  ```
+
+  @end_compatibility
   """
   if context.executing_eagerly():
     raise RuntimeError('tf.metrics.mean is not supported when eager execution '
@@ -442,6 +524,97 @@ def accuracy(labels,
       either `metrics_collections` or `updates_collections` are not a list or
       tuple.
     RuntimeError: If eager execution is enabled.
+
+  @compatibility(TF2)
+  `tf.compat.v1.metrics.accuracy` is not compatible with eager
+  execution or `tf.function`.
+  Please use `tf.keras.metrics.Accuracy` instead for TF2 migration. After
+  instantiating a `tf.keras.metrics.Accuracy` object, you can first call the
+  `update_state()` method to record the prediction/labels, and then call the
+  `result()` method to get the accuracy eagerly. You can also attach it to a
+  Keras model when calling the `compile` method. Please refer to [this
+  guide](https://www.tensorflow.org/guide/migrate#new-style_metrics_and_losses)
+  for more details.
+
+  #### Structural Mapping to Native TF2
+
+  Before:
+
+  ```python
+  accuracy, update_op = tf.compat.v1.metrics.accuracy(
+    labels=labels,
+    predictions=predictions,
+    weights=weights,
+    metrics_collections=metrics_collections,
+    update_collections=update_collections,
+    name=name)
+  ```
+
+  After:
+
+  ```python
+   m = tf.keras.metrics.Accuracy(
+     name=name,
+     dtype=None)
+
+   m.update_state(
+   y_true=labels,
+   y_pred=predictions,
+   sample_weight=weights)
+
+   accuracy = m.result()
+  ```
+
+  #### How to Map Arguments
+
+  | TF1 Arg Name          | TF2 Arg Name    | Note                       |
+  | :-------------------- | :-------------- | :------------------------- |
+  | `label`               | `y_true`        | In `update_state()` method |
+  | `predictions`         | `y_true`        | In `update_state()` method |
+  | `weights`             | `sample_weight` | In `update_state()` method |
+  | `metrics_collections` | Not supported   | Metrics should be tracked  |
+  :                       :                 : explicitly or with Keras   :
+  :                       :                 : APIs, for example,         :
+  :                       :                 : [add_metric][add_metric],  :
+  :                       :                 : instead of via collections :
+  | `updates_collections` | Not supported   | -                          |
+  | `name`                | `name`          | In constructor             |
+
+  [add_metric]:https://www.tensorflow.org/api_docs/python/tf/keras/layers/Layer#add_metric
+
+
+  #### Before & After Usage Example
+
+  Before:
+
+  >>> g = tf.Graph()
+  >>> with g.as_default():
+  ...   logits = [1, 2, 3]
+  ...   labels = [0, 2, 3]
+  ...   acc, acc_op = tf.compat.v1.metrics.accuracy(logits, labels)
+  ...   global_init = tf.compat.v1.global_variables_initializer()
+  ...   local_init = tf.compat.v1.local_variables_initializer()
+  >>> sess = tf.compat.v1.Session(graph=g)
+  >>> sess.run([global_init, local_init])
+  >>> print(sess.run([acc, acc_op]))
+  [0.0, 0.66667]
+
+
+  After:
+
+  >>> m = tf.keras.metrics.Accuracy()
+  >>> m.update_state([1, 2, 3], [0, 2, 3])
+  >>> m.result().numpy()
+  0.66667
+
+  ```python
+  # Used within Keras model
+  model.compile(optimizer='sgd',
+                loss='mse',
+                metrics=[tf.keras.metrics.Accuracy()])
+  ```
+
+  @end_compatibility
   """
   if context.executing_eagerly():
     raise RuntimeError('tf.metrics.accuracy is not supported when eager '
@@ -511,7 +684,7 @@ def _confusion_matrix_at_thresholds(labels,
   else:
     for include in includes:
       if include not in all_includes:
-        raise ValueError('Invalid key: %s.' % include)
+        raise ValueError(f'Invalid key: {include}')
 
   with ops.control_dependencies([
       check_ops.assert_greater_equal(
@@ -629,7 +802,7 @@ def _aggregate_variable(v, collections):
 @tf_export(v1=['metrics.auc'])
 @deprecated(None,
             'The value of AUC returned by this may race with the update so '
-            'this is deprected. Please use tf.keras.metrics.AUC instead.')
+            'this is deprecated. Please use tf.keras.metrics.AUC instead.')
 def auc(labels,
         predictions,
         weights=None,
@@ -724,7 +897,8 @@ def auc(labels,
   with variable_scope.variable_scope(name, 'auc',
                                      (labels, predictions, weights)):
     if curve != 'ROC' and curve != 'PR':
-      raise ValueError('curve must be either ROC or PR, %s unknown' % (curve))
+      raise ValueError(f'Curve must be either ROC or PR. Curve {curve} is '
+                       'unknown.')
 
     kepsilon = 1e-7  # To account for floating point imprecisions.
     if thresholds is not None:
@@ -748,7 +922,7 @@ def auc(labels,
     epsilon = 1.0e-6
 
     def interpolate_pr_auc(tp, fp, fn):
-      """Interpolation formula inspired by section 4 of Davis & Goadrich 2006.
+      """Interpolation formula inspired by section 4 of (Davis et al., 2006).
 
       Note here we derive & use a closed formula not present in the paper
       - as follows:
@@ -775,8 +949,14 @@ def auc(labels,
         tp: true positive counts
         fp: false positive counts
         fn: false negative counts
+
       Returns:
         pr_auc: an approximation of the area under the P-R curve.
+
+      References:
+        The Relationship Between Precision-Recall and ROC Curves:
+          [Davis et al., 2006](https://dl.acm.org/citation.cfm?id=1143874)
+          ([pdf](https://www.biostat.wisc.edu/~page/rocpr.pdf))
       """
       dtp = tp[:num_thresholds - 1] - tp[1:]
       p = tp + fp
@@ -808,13 +988,13 @@ def auc(labels,
         elif summation_method == 'careful_interpolation':
           # This one is a bit tricky and is handled separately.
           return interpolate_pr_auc(tp, fp, fn)
-      rec = math_ops.div(tp + epsilon, tp + fn + epsilon)
+      rec = math_ops.divide(tp + epsilon, tp + fn + epsilon)
       if curve == 'ROC':
-        fp_rate = math_ops.div(fp, fp + tn + epsilon)
+        fp_rate = math_ops.divide(fp, fp + tn + epsilon)
         x = fp_rate
         y = rec
       else:  # curve == 'PR'.
-        prec = math_ops.div(tp + epsilon, tp + fp + epsilon)
+        prec = math_ops.divide(tp + epsilon, tp + fp + epsilon)
         x = rec
         y = prec
       if summation_method in ('trapezoidal', 'careful_interpolation'):
@@ -835,7 +1015,10 @@ def auc(labels,
                               math_ops.maximum(y[:num_thresholds - 1], y[1:])),
             name=name)
       else:
-        raise ValueError('Invalid summation_method: %s' % summation_method)
+        raise ValueError(f'Invalid summation_method: {summation_method} '
+                         'summation_method should be \'trapezoidal\', '
+                         '\'careful_interpolation\', \'minoring\', or '
+                         '\'majoring\'.')
 
     # sum up the areas of all the trapeziums
     def compute_auc_value(_, values):
@@ -1178,7 +1361,7 @@ def mean_iou(labels,
       denominator = array_ops.where(
           math_ops.greater(denominator, 0), denominator,
           array_ops.ones_like(denominator))
-      iou = math_ops.div(cm_diag, denominator)
+      iou = math_ops.divide(cm_diag, denominator)
 
       # If the number of valid entries is 0 (no classes) we return 0.
       result = array_ops.where(
@@ -1260,7 +1443,7 @@ def mean_relative_error(labels,
   predictions.get_shape().assert_is_compatible_with(normalizer.get_shape())
   relative_errors = array_ops.where(
       math_ops.equal(normalizer, 0.0), array_ops.zeros_like(labels),
-      math_ops.div(math_ops.abs(labels - predictions), normalizer))
+      math_ops.divide(math_ops.abs(labels - predictions), normalizer))
   return mean(relative_errors, weights, metrics_collections,
               updates_collections, name or 'mean_relative_error')
 
@@ -2026,7 +2209,7 @@ def precision(labels,
 
     def compute_precision(tp, fp, name):
       return array_ops.where(
-          math_ops.greater(tp + fp, 0), math_ops.div(tp, tp + fp), 0, name)
+          math_ops.greater(tp + fp, 0), math_ops.divide(tp, tp + fp), 0, name)
 
     def once_across_replicas(_, true_p, false_p):
       return compute_precision(true_p, false_p, 'value')
@@ -2107,7 +2290,7 @@ def precision_at_thresholds(labels,
     epsilon = 1e-7
 
     def compute_precision(tp, fp, name):
-      return math_ops.div(tp, epsilon + tp + fp, name='precision_' + name)
+      return math_ops.divide(tp, epsilon + tp + fp, name='precision_' + name)
 
     def precision_across_replicas(_, values):
       return compute_precision(values['tp'], values['fp'], 'value')
@@ -2200,7 +2383,7 @@ def recall(labels,
     def compute_recall(true_p, false_n, name):
       return array_ops.where(
           math_ops.greater(true_p + false_n, 0),
-          math_ops.div(true_p, true_p + false_n), 0, name)
+          math_ops.divide(true_p, true_p + false_n), 0, name)
 
     def once_across_replicas(_, true_p, false_n):
       return compute_recall(true_p, false_n, 'value')
@@ -2639,12 +2822,12 @@ def recall_at_top_k(labels,
         weights=weights)
 
     def compute_recall(_, tp, fn):
-      return math_ops.div(tp, math_ops.add(tp, fn), name=scope)
+      return math_ops.divide(tp, math_ops.add(tp, fn), name=scope)
 
     metric = _aggregate_across_replicas(
         metrics_collections, compute_recall, tp, fn)
 
-    update = math_ops.div(
+    update = math_ops.divide(
         tp_update, math_ops.add(tp_update, fn_update), name='update')
     if updates_collections:
       ops.add_to_collections(updates_collections, update)
@@ -2714,7 +2897,7 @@ def recall_at_thresholds(labels,
     epsilon = 1e-7
 
     def compute_recall(tp, fn, name):
-      return math_ops.div(tp, epsilon + tp + fn, name='recall_' + name)
+      return math_ops.divide(tp, epsilon + tp + fn, name='recall_' + name)
 
     def recall_across_replicas(_, values):
       return compute_recall(values['tp'], values['fn'], 'value')
@@ -2864,7 +3047,8 @@ def sensitivity_at_specificity(labels,
                        'supported when eager execution is enabled.')
 
   if specificity < 0 or specificity > 1:
-    raise ValueError('`specificity` must be in the range [0, 1].')
+    raise ValueError('`specificity` must be in the range [0, 1]. Currently, '
+                     f'`specificity` got {specificity}.')
 
   with variable_scope.variable_scope(name, 'sensitivity_at_specificity',
                                      (predictions, labels, weights)):
@@ -2878,13 +3062,13 @@ def sensitivity_at_specificity(labels,
         labels, predictions, thresholds, weights)
 
     def compute_sensitivity_at_specificity(tp, tn, fp, fn, name):
-      specificities = math_ops.div(tn, tn + fp + kepsilon)
+      specificities = math_ops.divide(tn, tn + fp + kepsilon)
       tf_index = math_ops.argmin(math_ops.abs(specificities - specificity), 0)
       tf_index = math_ops.cast(tf_index, dtypes.int32)
 
       # Now, we have the implicit threshold, so compute the sensitivity:
-      return math_ops.div(tp[tf_index], tp[tf_index] + fn[tf_index] + kepsilon,
-                          name)
+      return math_ops.divide(tp[tf_index],
+                             tp[tf_index] + fn[tf_index] + kepsilon, name)
 
     def sensitivity_across_replicas(_, values):
       return compute_sensitivity_at_specificity(
@@ -2922,7 +3106,8 @@ def _expand_and_tile(tensor, multiple, dim=0, name=None):
     `[-rank(tensor), rank(tensor)]`.
   """
   if multiple < 1:
-    raise ValueError('Invalid multiple %s, must be > 0.' % multiple)
+    raise ValueError(f'Invalid argument multiple={multiple} for '
+                     'expand_and_tile  call. `multiple` must be an integer > 0')
   with ops.name_scope(name, 'expand_and_tile',
                       (tensor, multiple, dim)) as scope:
     # Sparse.
@@ -2977,7 +3162,7 @@ def _num_relevant(labels, k):
     ValueError: if inputs have invalid dtypes or values.
   """
   if k < 1:
-    raise ValueError('Invalid k=%s.' % k)
+    raise ValueError(f'Invalid k={k}')
   with ops.name_scope(None, 'num_relevant', (labels,)) as scope:
     # For SparseTensor, calculate separate count for each row.
     labels = sparse_tensor.convert_to_tensor_or_sparse_tensor(labels)
@@ -3031,10 +3216,11 @@ def _sparse_average_precision_at_top_k(labels, predictions_idx):
     predictions_idx = math_ops.cast(
         predictions_idx, dtypes.int64, name='predictions_idx')
     if predictions_idx.get_shape().ndims == 0:
-      raise ValueError('The rank of predictions_idx must be at least 1.')
+      raise ValueError('The rank of `predictions_idx` must be at least 1.')
     k = predictions_idx.get_shape().as_list()[-1]
     if k is None:
-      raise ValueError('The last dimension of predictions_idx must be set.')
+      raise ValueError('The last dimension of predictions_idx must be set. '
+                       'Currently, it is None.')
     labels = _maybe_expand_labels(labels, predictions_idx)
 
     # Expand dims to produce [D1, ... DN, k, 1] tensor. This gives us a separate
@@ -3064,7 +3250,7 @@ def _sparse_average_precision_at_top_k(labels, predictions_idx):
     tp_per_k = math_ops.cumsum(relevant_per_k, axis=-1, name='tp_per_k')
     retrieved_per_k = math_ops.cumsum(
         array_ops.ones_like(relevant_per_k), axis=-1, name='retrieved_per_k')
-    precision_per_k = math_ops.div(
+    precision_per_k = math_ops.divide(
         math_ops.cast(tp_per_k, dtypes.float64),
         math_ops.cast(retrieved_per_k, dtypes.float64),
         name='precision_per_k')
@@ -3080,7 +3266,7 @@ def _sparse_average_precision_at_top_k(labels, predictions_idx):
     # Divide by number of relevant items to get average precision. These are
     # the "num_relevant_items" and "AveP" terms from the formula above.
     num_relevant_items = math_ops.cast(_num_relevant(labels, k), dtypes.float64)
-    return math_ops.div(precision_sum, num_relevant_items, name=scope)
+    return math_ops.divide(precision_sum, num_relevant_items, name=scope)
 
 
 def _streaming_sparse_average_precision_at_top_k(labels,
@@ -3302,7 +3488,7 @@ def average_precision_at_k(labels,
                        'supported when eager execution is enabled.')
 
   if k < 1:
-    raise ValueError('Invalid k=%s.' % k)
+    raise ValueError(f'Invalid k={k}. `k` should be >= 1.')
   with ops.name_scope(name, _at_k_name('average_precision', k),
                       (predictions, labels, weights)) as scope:
     # Calculate top k indices to produce [D1, ... DN, k] tensor.
@@ -3494,12 +3680,12 @@ def precision_at_top_k(labels,
         weights=weights)
 
     def precision_across_replicas(_, tp, fp):
-      return math_ops.div(tp, math_ops.add(tp, fp), name=scope)
+      return math_ops.divide(tp, math_ops.add(tp, fp), name=scope)
 
     metric = _aggregate_across_replicas(
         metrics_collections, precision_across_replicas, tp, fp)
 
-    update = math_ops.div(
+    update = math_ops.divide(
         tp_update, math_ops.add(tp_update, fp_update), name='update')
     if updates_collections:
       ops.add_to_collections(updates_collections, update)
@@ -3686,7 +3872,8 @@ def specificity_at_sensitivity(labels,
                        'supported when eager execution is enabled.')
 
   if sensitivity < 0 or sensitivity > 1:
-    raise ValueError('`sensitivity` must be in the range [0, 1].')
+    raise ValueError('`sensitivity` must be in the range [0, 1]. Currently, '
+                     f'`sensitivity` is {sensitivity}.')
 
   with variable_scope.variable_scope(name, 'specificity_at_sensitivity',
                                      (predictions, labels, weights)):
@@ -3712,7 +3899,7 @@ def specificity_at_sensitivity(labels,
       Returns:
         The specificity using the aggregated values.
       """
-      sensitivities = math_ops.div(tp, tp + fn + kepsilon)
+      sensitivities = math_ops.divide(tp, tp + fn + kepsilon)
 
       # We'll need to use this trick until tf.argmax allows us to specify
       # whether we should use the first or last index in case of ties.
@@ -3725,8 +3912,8 @@ def specificity_at_sensitivity(labels,
       tf_index = math_ops.cast(tf_index, dtypes.int32)
 
       # Now, we have the implicit threshold, so compute the specificity:
-      return math_ops.div(tn[tf_index], tn[tf_index] + fp[tf_index] + kepsilon,
-                          name)
+      return math_ops.divide(tn[tf_index],
+                             tn[tf_index] + fp[tf_index] + kepsilon, name)
 
     def specificity_across_replicas(_, values):
       return compute_specificity_at_sensitivity(

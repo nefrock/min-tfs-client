@@ -19,11 +19,16 @@ limitations under the License.
 #include "absl/container/flat_hash_set.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
 #include "tensorflow/compiler/xla/service/hlo_instruction.h"
+#include "tensorflow/compiler/xla/service/hlo_module.h"
+#include "tensorflow/compiler/xla/service/hlo_opcode.h"
 
 namespace xla {
 
 // Helper interface for making queries about the HLO IR.
 namespace hlo_query {
+
+// Returns whether the given opcode is a collective communications operation.
+bool IsCollectiveCommunicationOp(HloOpcode op);
 
 // Returns whether the instruction provided is a constant rank-0 float32, and
 // if so, places the constant value into out.
@@ -52,18 +57,17 @@ bool ContainsInstrWithOpcode(const HloComputation* comp,
 // Returns an operand of an instruction with the given opcode. If there are
 // multiple matching operands, then the first matching operand is returned. If
 // there are no matching operands then nullptr is returned.
-HloInstruction* GetMatchingOperand(
-    const std::function<bool(const HloInstruction*)>& matcher,
-    HloInstruction* instruction);
+HloInstruction* GetMatchingOperand(const HloPredicate& matcher,
+                                   HloInstruction* instruction);
 
 // Returns whether a binary instruction has a matching operand. Sets
 // matching_operand to the matching operand and the other operand to
 // other_operand. Note: in the case where both operands match, the first operand
 // of the instruction is returned.
-bool MatchBinaryInstructionOperand(
-    const std::function<bool(const HloInstruction*)>& matcher,
-    HloInstruction* instruction, HloInstruction** matching_operand,
-    HloInstruction** other_operand);
+bool MatchBinaryInstructionOperand(const HloPredicate& matcher,
+                                   HloInstruction* instruction,
+                                   HloInstruction** matching_operand,
+                                   HloInstruction** other_operand);
 
 // Returns whether a binary instruction has a operand with a given opcode.
 // This is a special case of MatchingBinaryInstructionOperand.
@@ -71,6 +75,25 @@ bool MatchBinaryInstructionOperandOpcode(HloOpcode opcode,
                                          HloInstruction* instruction,
                                          HloInstruction** matching_operand,
                                          HloInstruction** other_operand);
+
+// Returns whether the module contains the given collective communication
+// instructions with constrained layout.
+bool ContainsLayoutConstrainedCollective(const HloModule& module, HloOpcode op);
+
+// Returns whether the module contains all-reduce instructions with constrained
+// layout.
+inline bool ContainsLayoutConstrainedAllReduce(const HloModule& module) {
+  return ContainsLayoutConstrainedCollective(module, HloOpcode::kAllReduce);
+}
+
+// Returns the next available channel id that can be used in the given module
+// (for HloChannelInstructions).
+int64_t NextChannelId(const HloModule& module);
+
+// Returns whether the module contains host send/recv with X64 data type.
+// This function is called after X64Rewriter, so X64 host transfers are already
+// rewritten into tuple shaped transfers.
+bool HasX64TransformedHostTransfer(const HloModule& module);
 
 }  // namespace hlo_query
 }  // namespace xla

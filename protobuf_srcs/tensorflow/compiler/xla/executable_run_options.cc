@@ -16,19 +16,22 @@ limitations under the License.
 #include "tensorflow/compiler/xla/executable_run_options.h"
 
 #include <atomic>
-
-#include "absl/strings/str_cat.h"
+#include <string>
 
 namespace xla {
 
 RunId::RunId() {
-  static std::atomic<int64> counter{0};
+  static std::atomic<int64_t> counter{0};
   data_ = counter.fetch_add(1);
 }
 
 bool operator==(const RunId& a, const RunId& b) { return a.data_ == b.data_; }
 
-std::string RunId::ToString() const { return absl::StrCat("RunId: ", data_); }
+std::string RunId::ToString() const {
+  return "RunId: " + std::to_string(data_);
+}
+
+int64_t RunId::ToInt() const { return data_; }
 
 ExecutableRunOptions& ExecutableRunOptions::set_device_ordinal(
     int device_ordinal) {
@@ -98,6 +101,17 @@ ExecutableRunOptions& ExecutableRunOptions::set_device_assignment(
 
 const DeviceAssignment* ExecutableRunOptions::device_assignment() const {
   return device_assignment_;
+}
+
+ExecutableRunOptions& ExecutableRunOptions::set_gpu_executable_run_options(
+    const gpu::GpuExecutableRunOptions* gpu_executable_run_options) {
+  gpu_executable_run_options_ = gpu_executable_run_options;
+  return *this;
+}
+
+const gpu::GpuExecutableRunOptions*
+ExecutableRunOptions::gpu_executable_run_options() const {
+  return gpu_executable_run_options_;
 }
 
 ExecutableRunOptions& ExecutableRunOptions::set_rng_seed(int rng_seed) {

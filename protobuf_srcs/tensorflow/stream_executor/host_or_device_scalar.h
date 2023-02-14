@@ -16,41 +16,6 @@ limitations under the License.
 #ifndef TENSORFLOW_STREAM_EXECUTOR_HOST_OR_DEVICE_SCALAR_H_
 #define TENSORFLOW_STREAM_EXECUTOR_HOST_OR_DEVICE_SCALAR_H_
 
-#include "tensorflow/stream_executor/device_memory.h"
-#include "tensorflow/stream_executor/platform/logging.h"
+#include "tensorflow/compiler/xla/stream_executor/host_or_device_scalar.h"
 
-namespace stream_executor {
-
-// Allows to represent a value that is either a host scalar or a scalar stored
-// on the GPU device.
-template <typename ElemT>
-class HostOrDeviceScalar {
- public:
-  // Not marked as explicit because when using this constructor, we usually want
-  // to set this to a compile-time constant.
-  HostOrDeviceScalar(ElemT value) : value_(value), is_pointer_(false) {}
-  explicit HostOrDeviceScalar(const DeviceMemory<ElemT>& pointer)
-      : pointer_(pointer), is_pointer_(true) {
-    CHECK_EQ(1, pointer.ElementCount());
-  }
-
-  bool is_pointer() const { return is_pointer_; }
-  const DeviceMemory<ElemT>& pointer() const {
-    CHECK(is_pointer());
-    return pointer_;
-  }
-  const ElemT& value() const {
-    CHECK(!is_pointer());
-    return value_;
-  }
-
- private:
-  union {
-    ElemT value_;
-    DeviceMemory<ElemT> pointer_;
-  };
-  bool is_pointer_;
-};
-
-}  // namespace stream_executor
 #endif  // TENSORFLOW_STREAM_EXECUTOR_HOST_OR_DEVICE_SCALAR_H_

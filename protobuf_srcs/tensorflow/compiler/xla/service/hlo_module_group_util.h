@@ -28,7 +28,7 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_reachability.h"
 #include "tensorflow/compiler/xla/status.h"
 #include "tensorflow/compiler/xla/statusor.h"
-#include "tensorflow/core/lib/core/status.h"
+#include "tensorflow/tsl/platform/status.h"
 
 namespace xla {
 
@@ -103,12 +103,12 @@ class HloModuleGroupUtil {
       absl::Span<HloComputation* const> computations);
 
   // Updates the reachability of the given instruction, taking the global
-  // predeccessorss and successors into account.
+  // predecessors and successors into account.
   void UpdateReachabilityThroughInstruction(
       HloInstruction* instruction, HloReachabilityMap* reachability_map);
 
  private:
-  string CycleToString(HloInstruction* instruction);
+  std::string CycleToString(HloInstruction* instruction);
 
   const HloModuleGroupMetadata& metadata_;
 };

@@ -13,7 +13,13 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/kernels/test_util.h"
+
+#include <stdint.h>
+
+#include <vector>
+
 #include <gtest/gtest.h>
+#include "tensorflow/lite/testing/util.h"
 
 namespace tflite {
 namespace {
@@ -43,9 +49,3 @@ TEST(TestUtilTest, QuantizeVectorScalingUp) {
 
 }  // namespace
 }  // namespace tflite
-
-int main(int argc, char** argv) {
-  ::tflite::LogToStderr();
-  ::testing::InitGoogleTest(&argc, argv);
-  return RUN_ALL_TESTS();
-}

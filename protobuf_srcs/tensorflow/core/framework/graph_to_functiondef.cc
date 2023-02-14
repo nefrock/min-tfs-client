@@ -22,8 +22,10 @@ limitations under the License.
 #include "tensorflow/core/framework/function.pb.h"
 #include "tensorflow/core/framework/node_def.pb.h"
 #include "tensorflow/core/framework/node_def_util.h"
+#include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/graph/graph.h"
+#include "tensorflow/core/graph/graph_node_util.h"
 #include "tensorflow/core/graph/tensor_id.h"
 #include "tensorflow/core/lib/core/errors.h"
 #include "tensorflow/core/lib/core/status.h"
@@ -141,7 +143,7 @@ Status NodeNameMapping::UseOutputName(const string& name) {
         "' appears more than once in 'output_names' array.");
   }
   used_names_.emplace(name, 0);
-  return Status::OK();
+  return OkStatus();
 }
 
 string NodeNameMapping::Lookup(const string& name) const {
@@ -275,17 +277,10 @@ Status FillFunctionBody(
         }
       }
       if (!node_attr_def) {
-#ifdef TENSORFLOW_LITE_PROTOS
-        return errors::Unimplemented(
-            "Placeholder value is not supported for attributes not in OpDef. "
-            "Attribute: ",
-            node_attr_name);
-#else
         return errors::Unimplemented(
             "Placeholder value is not supported for attributes not in OpDef. "
             "Attribute: ",
             node_attr_name, ", OpDef: ", node->op_def().DebugString());
-#endif
       }
       OpDef::AttrDef* attr_def = fdef->mutable_signature()->add_attr();
       attr_def->set_name(func_attr_name);
@@ -294,7 +289,7 @@ Status FillFunctionBody(
       func_attr_names.insert(func_attr_name);
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 Status GraphToFunctionDefHelper(
@@ -314,7 +309,7 @@ Status GraphToFunctionDefHelper(
       return errors::InvalidArgument("Multiple '", node->type_string(),
                                      "' nodes found with index ", index);
     }
-    return Status::OK();
+    return OkStatus();
   };
 
   std::vector<const Node*> body_nodes;
@@ -353,7 +348,7 @@ Status GraphToFunctionDefHelper(
                                            "' node at index ", i);
           }
         }
-        return Status::OK();
+        return OkStatus();
       };
 
   TF_RETURN_IF_ERROR(validate_args_retvals(inputs, "_Arg"));
@@ -432,6 +427,7 @@ Status GraphToFunctionDef(const Graph& fn_body, const string& fn_name,
     const string& input_name = node_names.GetInputName(node->name());
     argdef->set_name(input_name);
     FunctionDef::ArgAttrs arg_attrs;
+    int64_t resource_arg_unique_id = -1;
     for (const auto& attr : node->attrs()) {
       // Only copy internal attributes. These attributes will be applied to
       // _Arg/Placeholder nodes when this FunctionDef is converted to graph,
@@ -439,10 +435,32 @@ Status GraphToFunctionDef(const Graph& fn_body, const string& fn_name,
       // _Arg/Placeholder nodes.
       if (absl::StartsWith(attr.first, "_")) {
         arg_attrs.mutable_attr()->insert(attr);
+      } else if (attr.first == "shape" && argdef->type() != DT_RESOURCE) {
+        // Preserve known shapes by moving them to the _output_shapes list.
+        // The _Arg shape function knows how to extract them from there.
+        // Don't preserve the shape of a resource arg node, which is a scalar
+        // resource handle.
+        AttrValue value;
+        *(value.mutable_list()->add_shape()) = attr.second.shape();
+        arg_attrs.mutable_attr()->insert({"_output_shapes", value});
+      } else if (attr.first == "value" && node->type_string() == "Const") {
+        // Small eager tensors are captured as const ops rather than
+        // Placeholders. Add a _output_shapes arg_attr with the shape of the
+        // const tensor.
+        AttrValue value;
+        *(value.mutable_list()->add_shape()) =
+            attr.second.tensor().tensor_shape();
+        arg_attrs.mutable_attr()->insert({"_output_shapes", value});
+      }
+      if (attr.first == "_resource_arg_unique_id") {
+        resource_arg_unique_id = attr.second.i();
       }
     }
     if (arg_attrs.attr_size() > 0) {
       (*fdef->mutable_arg_attr())[i] = std::move(arg_attrs);
+    }
+    if (resource_arg_unique_id >= 0) {
+      (*fdef->mutable_resource_arg_unique_id())[idx] = resource_arg_unique_id;
     }
     tensor_renaming[strings::StrCat(node->name(), ":", idx)] = input_name;
   }
@@ -562,7 +580,7 @@ Status GraphToFunctionDef(const Graph& fn_body, const string& fn_name,
     fdef->mutable_signature()->add_control_output(control_output);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status GraphToFunctionDef(

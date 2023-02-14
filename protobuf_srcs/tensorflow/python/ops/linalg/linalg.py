@@ -14,10 +14,6 @@
 # ==============================================================================
 """Public API for tf.linalg namespace."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 # go/tf-wildcard-import
 # pylint: disable=wildcard-import,unused-import
 from tensorflow.python.ops.linalg import adjoint_registrations as _adjoint_registrations
@@ -29,6 +25,7 @@ from tensorflow.python.ops.linalg import solve_registrations as _solve_registrat
 from tensorflow.python.ops.linalg.linalg_impl import *
 from tensorflow.python.ops.linalg.linear_operator import *
 from tensorflow.python.ops.linalg.linear_operator_block_diag import *
+from tensorflow.python.ops.linalg.linear_operator_block_lower_triangular import *
 from tensorflow.python.ops.linalg.linear_operator_circulant import *
 from tensorflow.python.ops.linalg.linear_operator_composition import *
 from tensorflow.python.ops.linalg.linear_operator_diag import *
@@ -39,14 +36,12 @@ from tensorflow.python.ops.linalg.linear_operator_low_rank_update import *
 from tensorflow.python.ops.linalg.linear_operator_lower_triangular import *
 from tensorflow.python.ops.linalg.linear_operator_permutation import *
 from tensorflow.python.ops.linalg.linear_operator_toeplitz import *
+from tensorflow.python.ops.linalg.linear_operator_tridiag import *
 from tensorflow.python.ops.linalg.linear_operator_zeros import *
 # pylint: enable=wildcard-import
 
 # Seal API.
 # pylint: disable=undefined-variable
-del absolute_import
-del division
-del print_function
 del ops
 del array_ops
 del gen_linalg_ops

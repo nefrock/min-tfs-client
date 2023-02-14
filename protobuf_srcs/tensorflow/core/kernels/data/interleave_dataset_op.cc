@@ -16,13 +16,14 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
+#include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/name_utils.h"
 #include "tensorflow/core/framework/model.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
-#include "tensorflow/core/kernels/data/name_utils.h"
 #include "tensorflow/core/lib/random/random.h"
 #include "tensorflow/core/platform/cpu_info.h"
+#include "tensorflow/core/platform/stringprintf.h"
 
 namespace tensorflow {
 namespace data {
@@ -50,8 +51,8 @@ constexpr char kArgsList[] = "args_list_";
 class InterleaveDatasetOp::Dataset : public DatasetBase {
  public:
   Dataset(OpKernelContext* ctx, const DatasetBase* input,
-          std::unique_ptr<CapturedFunction> captured_func, int64 cycle_length,
-          int64 block_length, const DataTypeVector& output_types,
+          std::unique_ptr<CapturedFunction> captured_func, int64_t cycle_length,
+          int64_t block_length, const DataTypeVector& output_types,
           const std::vector<PartialTensorShape>& output_shapes)
       : DatasetBase(DatasetContext(ctx)),
         input_(input),
@@ -59,7 +60,12 @@ class InterleaveDatasetOp::Dataset : public DatasetBase {
         cycle_length_(cycle_length),
         block_length_(block_length),
         output_types_(output_types),
-        output_shapes_(output_shapes) {
+        output_shapes_(output_shapes),
+        traceme_metadata_(
+            {{"block_length",
+              strings::Printf("%lld", static_cast<long long>(block_length))},
+             {"cycle_length",
+              strings::Printf("%lld", static_cast<long long>(cycle_length))}}) {
     input_->Ref();
   }
 
@@ -67,7 +73,7 @@ class InterleaveDatasetOp::Dataset : public DatasetBase {
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return absl::make_unique<Iterator>(Iterator::Params{
+    return std::make_unique<Iterator>(Iterator::Params{
         this, name_utils::IteratorPrefix(kDatasetType, prefix)});
   }
 
@@ -79,6 +85,11 @@ class InterleaveDatasetOp::Dataset : public DatasetBase {
 
   string DebugString() const override {
     return name_utils::DatasetDebugString(kDatasetType);
+  }
+
+  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+    inputs->push_back(input_);
+    return OkStatus();
   }
 
   Status CheckExternalState() const override {
@@ -109,7 +120,7 @@ class InterleaveDatasetOp::Dataset : public DatasetBase {
         this, {{0, input_node}, {2, cycle_length_node}, {3, block_length_node}},
         {{1, other_arguments}},
         {{kFunc, f}, {kTarguments, other_arguments_types_attr}}, output));
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
@@ -120,25 +131,19 @@ class InterleaveDatasetOp::Dataset : public DatasetBase {
           current_elements_(params.dataset->cycle_length_),
           args_list_(params.dataset->cycle_length_) {}
 
-    string BuildTraceMeName() override {
-      return strings::StrCat(prefix(),
-                             "#cycle_length=", dataset()->cycle_length_,
-                             ",block_length=", dataset()->block_length_, "#");
-    }
-
     Status Initialize(IteratorContext* ctx) override {
       TF_RETURN_IF_ERROR(
-          dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_));
+          dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_));
       return dataset()->captured_func_->Instantiate(
           ctx, &instantiated_captured_func_);
     }
 
-    void AdvanceToNextInCycle() EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    void AdvanceToNextInCycle() TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
       block_index_ = 0;
       cycle_index_ = (cycle_index_ + 1) % dataset()->cycle_length_;
     }
 
-    void AdvancePosition() EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    void AdvancePosition() TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
       ++block_index_;
       if (block_index_ == dataset()->block_length_) {
         AdvanceToNextInCycle();
@@ -160,7 +165,7 @@ class InterleaveDatasetOp::Dataset : public DatasetBase {
             // Produce the subelement as output.
             AdvancePosition();
             *end_of_sequence = false;
-            return Status::OK();
+            return OkStatus();
           }
           // We have reached the end of the current element, so move
           // on to the next element in the cycle.
@@ -175,9 +180,9 @@ class InterleaveDatasetOp::Dataset : public DatasetBase {
               ctx, &args_list_[cycle_index_], &end_of_input_));
           if (!end_of_input_) {
             TF_RETURN_IF_ERROR(MakeIteratorFromInputElement(
-                ctx, args_list_[cycle_index_], cycle_index_,
+                ctx, this, args_list_[cycle_index_], cycle_index_,
                 *instantiated_captured_func_, prefix(),
-                &current_elements_[cycle_index_]));
+                &current_elements_[cycle_index_], model_node()));
             ++num_open_;
           }
         } else {
@@ -186,18 +191,66 @@ class InterleaveDatasetOp::Dataset : public DatasetBase {
       }
 
       *end_of_sequence = true;
-      return Status::OK();
+      return OkStatus();
+    }
+
+    Status SkipInternal(IteratorContext* ctx, int num_to_skip,
+                        bool* end_of_sequence, int* num_skipped) override {
+      mutex_lock l(mu_);
+      *num_skipped = 0;
+      while (!end_of_input_ || num_open_ > 0) {
+        if (current_elements_[cycle_index_]) {
+          // We are currently processing a mapped element, so try to get the
+          // next subelement.
+          int element_num_to_skip = num_to_skip - *num_skipped;
+          if (element_num_to_skip > dataset()->block_length_ - block_index_) {
+            element_num_to_skip = dataset()->block_length_ - block_index_;
+          }
+          bool end_of_element = false;
+          int element_num_skipped = 0;
+          TF_RETURN_IF_ERROR(current_elements_[cycle_index_]->Skip(
+              ctx, element_num_to_skip, &end_of_element, &element_num_skipped));
+          *num_skipped += element_num_skipped;
+          if (end_of_element) {
+            // We have reached the end of the current element, so move
+            // on to the next element in the cycle.
+            current_elements_[cycle_index_].reset();
+            args_list_[cycle_index_].clear();
+            --num_open_;
+            AdvanceToNextInCycle();
+          } else {
+            block_index_ += element_num_skipped;
+            if (block_index_ == dataset()->block_length_) {
+              AdvanceToNextInCycle();
+            }
+          }
+          if (num_to_skip == *num_skipped) {
+            *end_of_sequence = false;
+            return OkStatus();
+          }
+        } else {
+          TF_RETURN_IF_ERROR(MoveToNextElement(ctx));
+        }
+      }
+
+      *end_of_sequence = true;
+      return OkStatus();
     }
 
    protected:
     std::shared_ptr<model::Node> CreateNode(
         IteratorContext* ctx, model::Node::Args args) const override {
-      return model::MakeInterleaveManyNode(std::move(args));
+      return model::MakeInterleaveManyNode(
+          std::move(args), {model::MakeNonTunableParameter(
+                               kCycleLength, dataset()->cycle_length_)});
     }
 
-    Status SaveInternal(IteratorStateWriter* writer) override {
+    Status SaveInternal(SerializationContext* ctx,
+                        IteratorStateWriter* writer) override {
+      TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
+          dataset()->captured_func_->CheckExternalState()));
       mutex_lock l(mu_);
-      TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
+      TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
       TF_RETURN_IF_ERROR(
           writer->WriteScalar(full_name(kCycleIndex), cycle_index_));
       TF_RETURN_IF_ERROR(
@@ -206,34 +259,39 @@ class InterleaveDatasetOp::Dataset : public DatasetBase {
         TF_RETURN_IF_ERROR(writer->WriteScalar(full_name(kEndOfInput), ""));
       }
       TF_RETURN_IF_ERROR(writer->WriteScalar(full_name(kNumOpen), num_open_));
-      TF_RETURN_IF_ERROR(SaveCurrentElements(writer));
-      return Status::OK();
+      TF_RETURN_IF_ERROR(SaveCurrentElements(ctx, writer));
+      return OkStatus();
     }
 
     Status RestoreInternal(IteratorContext* ctx,
                            IteratorStateReader* reader) override {
       mutex_lock l(mu_);
       TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, input_impl_));
-      int64 cycle_index;
+      int64_t cycle_index;
       TF_RETURN_IF_ERROR(
           reader->ReadScalar(full_name(kCycleIndex), &cycle_index));
       cycle_index_ = size_t(cycle_index);
       TF_RETURN_IF_ERROR(
           reader->ReadScalar(full_name(kBlockIndex), &block_index_));
       if (reader->Contains(full_name(kEndOfInput))) end_of_input_ = true;
-      int64 num_open;
+      int64_t num_open;
       TF_RETURN_IF_ERROR(reader->ReadScalar(full_name(kNumOpen), &num_open));
       num_open_ = size_t(num_open);
       TF_RETURN_IF_ERROR(RestoreCurrentElements(ctx, reader));
-      return Status::OK();
+      return OkStatus();
+    }
+
+    TraceMeMetadata GetTraceMeMetadata() const override {
+      return dataset()->traceme_metadata_;
     }
 
    private:
-    Status SaveCurrentElements(IteratorStateWriter* writer)
-        EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    Status SaveCurrentElements(SerializationContext* ctx,
+                               IteratorStateWriter* writer)
+        TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
       for (int idx = 0; idx < current_elements_.size(); idx++) {
         if (current_elements_[idx]) {
-          TF_RETURN_IF_ERROR(SaveInput(writer, current_elements_[idx]));
+          TF_RETURN_IF_ERROR(SaveInput(ctx, writer, current_elements_[idx]));
           TF_RETURN_IF_ERROR(writer->WriteScalar(
               full_name(strings::StrCat(kArgsSize, "[", idx, "]")),
               args_list_[idx].size()));
@@ -244,69 +302,90 @@ class InterleaveDatasetOp::Dataset : public DatasetBase {
           }
         }
       }
-      return Status::OK();
+      return OkStatus();
     }
 
     Status RestoreCurrentElements(IteratorContext* ctx,
                                   IteratorStateReader* reader)
-        EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+        TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
       for (int idx = 0; idx < current_elements_.size(); idx++) {
         if (reader->Contains(
                 full_name(strings::StrCat(kArgsSize, "[", idx, "]")))) {
-          int64 args_size;
+          int64_t args_size;
           TF_RETURN_IF_ERROR(reader->ReadScalar(
               full_name(strings::StrCat(kArgsSize, "[", idx, "]")),
               &args_size));
           args_list_[idx].resize(args_size);
           for (int i = 0; i < args_size; i++) {
             TF_RETURN_IF_ERROR(reader->ReadTensor(
+                ctx->flr(),
                 full_name(strings::StrCat(kArgsList, "[", idx, "][", i, "]")),
                 &args_list_[idx][i]));
           }
+          // NOTE: We intentionally ignore resource modeling outside GetNext().
           TF_RETURN_IF_ERROR(MakeIteratorFromInputElement(
-              ctx, args_list_[idx], idx, *instantiated_captured_func_, prefix(),
-              &current_elements_[idx]));
+              ctx, this, args_list_[idx], idx, *instantiated_captured_func_,
+              prefix(), &current_elements_[idx], /*node=*/nullptr));
           TF_RETURN_IF_ERROR(RestoreInput(ctx, reader, current_elements_[idx]));
         } else {
           current_elements_[idx].reset();
         }
       }
-      return Status::OK();
+      return OkStatus();
+    }
+
+    Status MoveToNextElement(IteratorContext* ctx)
+        TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+      if (!end_of_input_) {
+        // Get the next element from the input dataset, and create
+        // an iterator from it.
+        TF_RETURN_IF_ERROR(input_impl_->GetNext(ctx, &args_list_[cycle_index_],
+                                                &end_of_input_));
+        if (!end_of_input_) {
+          TF_RETURN_IF_ERROR(MakeIteratorFromInputElement(
+              ctx, this, args_list_[cycle_index_], cycle_index_,
+              *instantiated_captured_func_, prefix(),
+              &current_elements_[cycle_index_], model_node()));
+          ++num_open_;
+        }
+      } else {
+        AdvanceToNextInCycle();
+      }
+      return OkStatus();
     }
 
     mutex mu_;
-    std::unique_ptr<IteratorBase> input_impl_ GUARDED_BY(mu_);
+    std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
     std::vector<std::unique_ptr<IteratorBase>> current_elements_
-        GUARDED_BY(mu_);
-    std::vector<std::vector<Tensor>> args_list_ GUARDED_BY(mu_);
-    size_t cycle_index_ GUARDED_BY(mu_) = 0;
-    int64 block_index_ GUARDED_BY(mu_) = 0;
-    bool end_of_input_ GUARDED_BY(mu_) = false;
-    size_t num_open_ GUARDED_BY(mu_) = 0;
+        TF_GUARDED_BY(mu_);
+    std::vector<std::vector<Tensor>> args_list_ TF_GUARDED_BY(mu_);
+    size_t cycle_index_ TF_GUARDED_BY(mu_) = 0;
+    int64_t block_index_ TF_GUARDED_BY(mu_) = 0;
+    bool end_of_input_ TF_GUARDED_BY(mu_) = false;
+    size_t num_open_ TF_GUARDED_BY(mu_) = 0;
     std::unique_ptr<InstantiatedCapturedFunction> instantiated_captured_func_;
   };
 
   const DatasetBase* const input_;
   const std::unique_ptr<CapturedFunction> captured_func_;
-  const int64 cycle_length_;
-  const int64 block_length_;
+  const int64_t cycle_length_;
+  const int64_t block_length_;
   const DataTypeVector output_types_;
   const std::vector<PartialTensorShape> output_shapes_;
+  const TraceMeMetadata traceme_metadata_;
 };
 
 InterleaveDatasetOp::InterleaveDatasetOp(OpKernelConstruction* ctx)
     : UnaryDatasetOpKernel(ctx), graph_def_version_(ctx->graph_def_version()) {
-  FunctionMetadata::Params params;
-  params.is_multi_device_function = true;
-  OP_REQUIRES_OK(ctx,
-                 FunctionMetadata::Create(ctx, kFunc, params, &func_metadata_));
+  OP_REQUIRES_OK(ctx, FunctionMetadata::Create(ctx, kFunc, /*params=*/{},
+                                               &func_metadata_));
   OP_REQUIRES_OK(ctx, ctx->GetAttr(kOutputTypes, &output_types_));
   OP_REQUIRES_OK(ctx, ctx->GetAttr(kOutputShapes, &output_shapes_));
 }
 
 void InterleaveDatasetOp::MakeDataset(OpKernelContext* ctx, DatasetBase* input,
                                       DatasetBase** output) {
-  int64 cycle_length = 0;
+  int64_t cycle_length = 0;
   OP_REQUIRES_OK(ctx, ParseScalarArgument(ctx, kCycleLength, &cycle_length));
   if (cycle_length == model::kAutotune) {
     cycle_length = port::MaxParallelism();
@@ -315,7 +394,7 @@ void InterleaveDatasetOp::MakeDataset(OpKernelContext* ctx, DatasetBase* input,
       ctx, cycle_length > 0,
       errors::InvalidArgument("cycle_length must be greater than zero."));
 
-  int64 block_length = 0;
+  int64_t block_length = 0;
   OP_REQUIRES_OK(ctx, ParseScalarArgument(ctx, kBlockLength, &block_length));
   OP_REQUIRES(
       ctx, block_length > 0,

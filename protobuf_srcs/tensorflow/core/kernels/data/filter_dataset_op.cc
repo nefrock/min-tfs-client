@@ -16,13 +16,13 @@ limitations under the License.
 
 #include "tensorflow/core/common_runtime/function.h"
 #include "tensorflow/core/common_runtime/input_colocation_exemption_registry.h"
+#include "tensorflow/core/data/dataset_utils.h"
+#include "tensorflow/core/data/name_utils.h"
+#include "tensorflow/core/data/stats_utils.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/partial_tensor_shape.h"
 #include "tensorflow/core/framework/stats_aggregator.h"
 #include "tensorflow/core/framework/tensor.h"
-#include "tensorflow/core/kernels/data/dataset_utils.h"
-#include "tensorflow/core/kernels/data/name_utils.h"
-#include "tensorflow/core/kernels/data/stats_utils.h"
 #include "tensorflow/core/lib/gtl/cleanup.h"
 #include "tensorflow/core/lib/random/random.h"
 #include "tensorflow/core/lib/strings/str_util.h"
@@ -59,7 +59,7 @@ class FilterDatasetOp::Dataset : public DatasetBase {
 
   std::unique_ptr<IteratorBase> MakeIteratorInternal(
       const string& prefix) const override {
-    return absl::make_unique<Iterator>(Iterator::Params{
+    return std::make_unique<Iterator>(Iterator::Params{
         this, name_utils::IteratorPrefix(kDatasetType, prefix)});
   }
 
@@ -73,6 +73,11 @@ class FilterDatasetOp::Dataset : public DatasetBase {
 
   string DebugString() const override {
     return name_utils::DatasetDebugString(kDatasetType);
+  }
+
+  Status InputDatasets(std::vector<const DatasetBase*>* inputs) const override {
+    inputs->push_back(input_);
+    return OkStatus();
   }
 
   Status CheckExternalState() const override {
@@ -98,7 +103,7 @@ class FilterDatasetOp::Dataset : public DatasetBase {
     TF_RETURN_IF_ERROR(b->AddDataset(
         this, {{0, input_graph_node}}, {{1, other_arguments}},
         {{kPredicate, f}, {kTarguments, other_arguments_types_attr}}, output));
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
@@ -111,7 +116,7 @@ class FilterDatasetOp::Dataset : public DatasetBase {
 
     Status Initialize(IteratorContext* ctx) override {
       TF_RETURN_IF_ERROR(
-          dataset()->input_->MakeIterator(ctx, prefix(), &input_impl_));
+          dataset()->input_->MakeIterator(ctx, this, prefix(), &input_impl_));
       return dataset()->captured_func_->Instantiate(
           ctx, &instantiated_captured_func_);
     }
@@ -130,7 +135,7 @@ class FilterDatasetOp::Dataset : public DatasetBase {
           tf_shared_lock l(mu_);
           if (!input_impl_) {
             *end_of_sequence = true;
-            return Status::OK();
+            return OkStatus();
           }
           TF_RETURN_IF_ERROR(
               input_impl_->GetNext(ctx, out_tensors, end_of_sequence));
@@ -138,12 +143,12 @@ class FilterDatasetOp::Dataset : public DatasetBase {
         if (*end_of_sequence) {
           mutex_lock l(mu_);
           input_impl_.reset();
-          return Status::OK();
+          return OkStatus();
         }
 
         std::vector<Tensor> result;
         TF_RETURN_IF_ERROR(instantiated_captured_func_->RunWithBorrowedArgs(
-            ctx, *out_tensors, &result));
+            ctx, *out_tensors, &result, model_node()));
 
         if (result.size() != 1 || result[0].dtype() != DT_BOOL ||
             result[0].NumElements() != 1) {
@@ -185,7 +190,7 @@ class FilterDatasetOp::Dataset : public DatasetBase {
                                            static_cast<float>(1));
       }
       *end_of_sequence = false;
-      return Status::OK();
+      return OkStatus();
     }
 
    protected:
@@ -194,10 +199,13 @@ class FilterDatasetOp::Dataset : public DatasetBase {
       return model::MakeUnknownRatioNode(std::move(args));
     }
 
-    Status SaveInternal(IteratorStateWriter* writer) override {
+    Status SaveInternal(SerializationContext* ctx,
+                        IteratorStateWriter* writer) override {
+      TF_RETURN_IF_ERROR(ctx->HandleCheckExternalStateStatus(
+          dataset()->captured_func_->CheckExternalState()));
       mutex_lock l(mu_);
       if (input_impl_)
-        TF_RETURN_IF_ERROR(SaveInput(writer, input_impl_));
+        TF_RETURN_IF_ERROR(SaveInput(ctx, writer, input_impl_));
       else
         TF_RETURN_IF_ERROR(
             writer->WriteScalar(full_name(kInputImplsEmpty), ""));
@@ -205,7 +213,7 @@ class FilterDatasetOp::Dataset : public DatasetBase {
                                              filtered_elements_));
       TF_RETURN_IF_ERROR(
           writer->WriteScalar(full_name(kDroppedElements), dropped_elements_));
-      return Status::OK();
+      return OkStatus();
     }
 
     Status RestoreInternal(IteratorContext* ctx,
@@ -219,14 +227,14 @@ class FilterDatasetOp::Dataset : public DatasetBase {
                                             &filtered_elements_));
       TF_RETURN_IF_ERROR(
           reader->ReadScalar(full_name(kDroppedElements), &dropped_elements_));
-      return Status::OK();
+      return OkStatus();
     }
 
    private:
     mutex mu_;
-    std::unique_ptr<IteratorBase> input_impl_ GUARDED_BY(mu_);
-    int64 filtered_elements_ GUARDED_BY(mu_);
-    int64 dropped_elements_ GUARDED_BY(mu_);
+    std::unique_ptr<IteratorBase> input_impl_ TF_GUARDED_BY(mu_);
+    int64_t filtered_elements_ TF_GUARDED_BY(mu_);
+    int64_t dropped_elements_ TF_GUARDED_BY(mu_);
     std::unique_ptr<InstantiatedCapturedFunction> instantiated_captured_func_;
   };
 
@@ -236,10 +244,8 @@ class FilterDatasetOp::Dataset : public DatasetBase {
 
 FilterDatasetOp::FilterDatasetOp(OpKernelConstruction* ctx)
     : UnaryDatasetOpKernel(ctx) {
-  FunctionMetadata::Params params;
-  params.is_multi_device_function = true;
-  OP_REQUIRES_OK(
-      ctx, FunctionMetadata::Create(ctx, kPredicate, params, &func_metadata_));
+  OP_REQUIRES_OK(ctx, FunctionMetadata::Create(ctx, kPredicate, /*params=*/{},
+                                               &func_metadata_));
   OP_REQUIRES(ctx, func_metadata_->short_circuit_info().indices.size() <= 1,
               errors::InvalidArgument(
                   "predicate function has more than one return value."));

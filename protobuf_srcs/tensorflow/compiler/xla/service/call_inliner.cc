@@ -20,6 +20,9 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/call_graph.h"
 #include "tensorflow/compiler/xla/service/dfs_hlo_visitor_with_default.h"
 #include "tensorflow/compiler/xla/service/hlo_dce.h"
+#include "tensorflow/compiler/xla/service/hlo_domain_isolator.h"
+#include "tensorflow/compiler/xla/service/hlo_instruction.h"
+#include "tensorflow/compiler/xla/service/hlo_sharding_metadata.h"
 #include "tensorflow/core/lib/core/errors.h"
 
 namespace xla {
@@ -27,7 +30,7 @@ namespace {
 
 // Traverses the callee computation, inlining cloned nodes into the caller
 // computation and connecting them to producers/consumers appropriately.
-// When the traversal has completed, the provided call instruction is entriely
+// When the traversal has completed, the provided call instruction is entirely
 // replaced in the caller's graph.
 class SubcomputationInsertionVisitor : public DfsHloVisitorWithDefault {
  public:
@@ -40,9 +43,7 @@ class SubcomputationInsertionVisitor : public DfsHloVisitorWithDefault {
 
   // Resolves the operands to the HLO instruction in the inlined (caller) graph,
   // and clones the HLO instruction into that graph with the new operands.
-  // If the instruction is a call, it is added to the work queue.
   Status DefaultAction(HloInstruction* hlo) override {
-    TF_RET_CHECK(hlo->opcode() != HloOpcode::kCall);
     std::vector<HloInstruction*> new_operands;
     for (HloInstruction* operand : hlo->operands()) {
       TF_ASSIGN_OR_RETURN(HloInstruction * new_operand, Resolve(operand));
@@ -62,7 +63,7 @@ class SubcomputationInsertionVisitor : public DfsHloVisitorWithDefault {
           new_control_predecessor->AddControlDependencyTo(new_hlo_pointer));
     }
 
-    return Status::OK();
+    return OkStatus();
   }
 
   // Does not create new nodes for the parameter; rather, notes the mapping from
@@ -71,7 +72,7 @@ class SubcomputationInsertionVisitor : public DfsHloVisitorWithDefault {
   Status HandleParameter(HloInstruction* parameter) override {
     TF_RETURN_IF_ERROR(NoteMapping(
         parameter, call_->mutable_operand(parameter->parameter_number())));
-    return Status::OK();
+    return OkStatus();
   }
 
   // Wires the consumers of the call to instead point at the newly created root,
@@ -80,7 +81,6 @@ class SubcomputationInsertionVisitor : public DfsHloVisitorWithDefault {
     TF_ASSIGN_OR_RETURN(HloInstruction * new_root, Resolve(root));
     VLOG(1) << "Replacing all uses of " << call_->ToString()
             << " with new root " << new_root->ToString();
-    call_->ClearCalledComputations();
     return outer_->ReplaceInstruction(call_, new_root);
   }
 
@@ -113,7 +113,7 @@ class SubcomputationInsertionVisitor : public DfsHloVisitorWithDefault {
         std::make_pair(subcomputation_hlo, new_hlo));
     TF_RET_CHECK(result.second)
         << "A mapping for the subcomputation HLO is already present.";
-    return Status::OK();
+    return OkStatus();
   }
 
   HloInstruction* call_;
@@ -136,35 +136,51 @@ class SubcomputationInsertionVisitor : public DfsHloVisitorWithDefault {
   return visitor.ConsumeInstructionMap();
 }
 
-StatusOr<bool> CallInliner::Run(HloModule* module) {
+StatusOr<bool> CallInliner::Run(
+    HloModule* module,
+    const absl::flat_hash_set<absl::string_view>& execution_threads) {
   std::unique_ptr<CallGraph> call_graph = CallGraph::Build(module);
   // Because call graph nodes are visited in post-order (callees before callers)
   // we'll always inline kCalls into their callers in the appropriate order.
   bool did_mutate = false;
-  TF_RETURN_IF_ERROR(
-      call_graph->VisitNodes([&](const CallGraphNode& node) -> Status {
-        for (const CallSite& callsite : node.caller_callsites()) {
-          VLOG(1) << "Visiting callsite: " << callsite.ToString();
-          bool callsite_alive =
-              absl::c_any_of(node.callers(), [&](HloComputation* caller) {
-                return caller->ContainsInstruction(callsite.instruction());
-              });
-          if (callsite.instruction()->opcode() == HloOpcode::kCall &&
-              callsite_alive) {
-            HloInstruction* call = callsite.instruction();
-            TF_RETURN_IF_ERROR(Inline(call).status());
-            did_mutate = true;
+  TF_RETURN_IF_ERROR(call_graph->VisitNodes([&](const CallGraphNode& node)
+                                                -> Status {
+    VLOG(1) << "Visiting node: " << node.ToString();
+    for (HloInstruction* instruction :
+         node.computation()->MakeInstructionPostOrder()) {
+      // Don't inline async called computation since currently it's only
+      // used for parallel device computation.
+      // TODO(b/229887502): update the inliner to ignore only parallel
+      // device type async call instead of all.
+      if (instruction->opcode() == HloOpcode::kCall &&
+          !instruction->parent()->IsAsyncComputation()) {
+        const auto& callees = instruction->called_computations();
+        TF_RET_CHECK(callees.size() == 1);
+        if (!single_call_site_ || call_graph->GetNode(instruction->to_apply())
+                                          .caller_callsites()
+                                          .size() == 1) {
+          TF_ASSIGN_OR_RETURN(CallInliner::InlinedInstructionMap inline_map,
+                              Inline(instruction));
+          if (update_domain_) {
+            HloDomainIsolator isolator(
+                []() { return ShardingDomainCreator{}; });
+            for (const auto& [call_inst, inlined_inst] : inline_map) {
+              TF_RETURN_IF_ERROR(isolator.UpdateDomains(inlined_inst).status());
+            }
           }
+          did_mutate = true;
         }
-        return Status::OK();
-      }));
+      }
+    }
+    return OkStatus();
+  }));
   if (did_mutate) {
     // Run DCE to remove called computations which are now becoming unused.
     // This can result then in problems if within the called computation, there
     // were send/recv instructions, which the module group verifier will flag as
     // error findingthe same channel ID used for multiple send/recv
     // instructions.
-    TF_RETURN_IF_ERROR(HloDCE().Run(module).status());
+    TF_RETURN_IF_ERROR(HloDCE().Run(module, execution_threads).status());
   }
   return did_mutate;
 }

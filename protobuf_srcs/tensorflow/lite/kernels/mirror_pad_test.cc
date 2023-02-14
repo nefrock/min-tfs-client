@@ -12,11 +12,12 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <vector>
+
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace {
@@ -55,7 +56,7 @@ TEST(MirrorPadTest, EmptyPad) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_REFLECT);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3, 4, 5, 6});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {0, 0, 0, 0});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(), ElementsAreArray({1, 2, 3, 4, 5, 6}));
 }
 
@@ -65,7 +66,7 @@ TEST(MirrorPadTest, PadOneSide_right_Reflect) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_REFLECT);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3, 4, 5, 6});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {0, 1, 0, 1});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({1, 2, 3, 2, 4, 5, 6, 5, 1, 2, 3, 2}));
 }
@@ -76,7 +77,7 @@ TEST(MirrorPadTest, PadOneSide_left_Reflect) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_REFLECT);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3, 4, 5, 6});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {1, 0, 1, 0});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({5, 4, 5, 6, 2, 1, 2, 3, 5, 4, 5, 6}));
 }
@@ -87,7 +88,7 @@ TEST(MirrorPadTest, PadOneSide_right_Symmetric) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_SYMMETRIC);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3, 4, 5, 6});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {0, 1, 0, 1});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({1, 2, 3, 3, 4, 5, 6, 6, 4, 5, 6, 6}));
 }
@@ -98,7 +99,7 @@ TEST(MirrorPadTest, PadOneSide_left_Symmetric) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_SYMMETRIC);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3, 4, 5, 6});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {1, 0, 1, 0});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({1, 1, 2, 3, 1, 1, 2, 3, 4, 4, 5, 6}));
 }
@@ -109,7 +110,7 @@ TEST(MirrorPadTest, PadBothSides_Symmetric) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_SYMMETRIC);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3, 4, 5, 6});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {1, 1, 1, 1});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({1, 1, 2, 3, 3, 1, 1, 2, 3, 3,
                                 4, 4, 5, 6, 6, 4, 4, 5, 6, 6}));
@@ -121,7 +122,7 @@ TEST(MirrorPadTest, PadBothSides_Reflect) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_REFLECT);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3, 4, 5, 6});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {1, 1, 1, 1});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({5, 4, 5, 6, 5, 2, 1, 2, 3, 2,
                                 5, 4, 5, 6, 5, 2, 1, 2, 3, 2}));
@@ -133,7 +134,7 @@ TEST(MirrorPadTest, PadBothSides_Symmetric_Whole) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_SYMMETRIC);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3, 4, 5, 6});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {2, 2, 3, 3});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(
       model.GetOutput(),
       ElementsAreArray({6, 5, 4, 4, 5, 6, 6, 5, 4, 3, 2, 1, 1, 2, 3, 3, 2, 1,
@@ -147,7 +148,7 @@ TEST(MirrorPadTest, PadBothSides_Reflect_Whole) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_REFLECT);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3, 4, 5, 6});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {1, 1, 2, 2});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({6, 5, 4, 5, 6, 5, 4, 3, 2, 1, 2, 3, 2, 1,
                                 6, 5, 4, 5, 6, 5, 4, 3, 2, 1, 2, 3, 2, 1}));
@@ -159,7 +160,7 @@ TEST(MirrorPadTest, Pad_Symmetric) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_SYMMETRIC);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3, 4, 5, 6});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {1, 1, 2, 2});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(),
               ElementsAreArray({2, 1, 1, 2, 3, 3, 2, 2, 1, 1, 2, 3, 3, 2,
                                 5, 4, 4, 5, 6, 6, 5, 5, 4, 4, 5, 6, 6, 5}));
@@ -171,7 +172,7 @@ TEST(MirrorPadTest, Pad_1D_Reflect) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_REFLECT);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {0, 2});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(), ElementsAreArray({1, 2, 3, 2, 1}));
 }
 
@@ -181,7 +182,7 @@ TEST(MirrorPadTest, Pad_1D_Symmetric) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_SYMMETRIC);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {0, 2});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(), ElementsAreArray({1, 2, 3, 3, 2}));
 }
 
@@ -191,10 +192,10 @@ TEST(MirrorPadTest, Pad_1D_Symmetric_Multiple_Invoke) {
       {TensorType_INT32, {}}, tflite::MirrorPadMode_SYMMETRIC);
   model.PopulateTensor<int>(model.input_tensor_id(), {1, 2, 3});
   model.PopulateTensor<int>(model.padding_matrix_tensor_id(), {0, 2});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(), ElementsAreArray({1, 2, 3, 3, 2}));
   model.PopulateTensor<int>(model.input_tensor_id(), {4, 5, 6});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutput(), ElementsAreArray({4, 5, 6, 6, 5}));
 }
 

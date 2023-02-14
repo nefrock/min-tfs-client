@@ -15,6 +15,17 @@ limitations under the License.
 
 #include "tensorflow/lite/tools/evaluation/utils.h"
 
+#include "tensorflow/lite/tools/delegates/delegate_provider.h"
+#if defined(__APPLE__)
+#include "TargetConditionals.h"
+#if (TARGET_OS_IPHONE && !TARGET_IPHONE_SIMULATOR) || \
+    (TARGET_OS_OSX && TARGET_CPU_ARM64)
+// Only enable coreml delegate when using a real iPhone device or Apple Silicon.
+#define REAL_IPHONE_DEVICE
+#include "tensorflow/lite/delegates/coreml/coreml_delegate.h"
+#endif
+#endif
+
 #if !defined(_WIN32)
 #include <dirent.h>
 #endif
@@ -67,7 +78,7 @@ TfLiteStatus GetSortedFileNames(
     while ((ent = readdir(dir)) != nullptr) {
       if (ent->d_type == DT_DIR) continue;
       std::string filename(std::string(ent->d_name));
-      size_t lastdot = filename.find_last_of(".");
+      size_t lastdot = filename.find_last_of('.');
       std::string ext = lastdot != std::string::npos ? filename.substr(lastdot)
                                                      : std::string();
       std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
@@ -85,50 +96,120 @@ TfLiteStatus GetSortedFileNames(
 }
 #endif
 
-// TODO(b/138448769): Migrate delegate helper APIs to lite/testing.
-Interpreter::TfLiteDelegatePtr CreateNNAPIDelegate() {
+TfLiteDelegatePtr CreateNNAPIDelegate() {
 #if defined(__ANDROID__)
-  return Interpreter::TfLiteDelegatePtr(
+  return TfLiteDelegatePtr(
       NnApiDelegate(),
       // NnApiDelegate() returns a singleton, so provide a no-op deleter.
       [](TfLiteDelegate*) {});
 #else
-  return Interpreter::TfLiteDelegatePtr(nullptr, [](TfLiteDelegate*) {});
+  return tools::CreateNullDelegate();
 #endif  // defined(__ANDROID__)
 }
 
-Interpreter::TfLiteDelegatePtr CreateNNAPIDelegate(
-    StatefulNnApiDelegate::Options options) {
+TfLiteDelegatePtr CreateNNAPIDelegate(StatefulNnApiDelegate::Options options) {
 #if defined(__ANDROID__)
-  return Interpreter::TfLiteDelegatePtr(
+  return TfLiteDelegatePtr(
       new StatefulNnApiDelegate(options), [](TfLiteDelegate* delegate) {
         delete reinterpret_cast<StatefulNnApiDelegate*>(delegate);
       });
 #else
-  return Interpreter::TfLiteDelegatePtr(nullptr, [](TfLiteDelegate*) {});
+  return tools::CreateNullDelegate();
 #endif  // defined(__ANDROID__)
 }
 
-#if defined(__ANDROID__)
-Interpreter::TfLiteDelegatePtr CreateGPUDelegate(
-    tflite::FlatBufferModel* model, TfLiteGpuDelegateOptionsV2* options) {
-  return Interpreter::TfLiteDelegatePtr(TfLiteGpuDelegateV2Create(options),
-                                        &TfLiteGpuDelegateV2Delete);
+#if TFLITE_SUPPORTS_GPU_DELEGATE
+TfLiteDelegatePtr CreateGPUDelegate(TfLiteGpuDelegateOptionsV2* options) {
+  return TfLiteDelegatePtr(TfLiteGpuDelegateV2Create(options),
+                           &TfLiteGpuDelegateV2Delete);
 }
-#endif  // defined(__ANDROID__)
+#endif  // TFLITE_SUPPORTS_GPU_DELEGATE
 
-Interpreter::TfLiteDelegatePtr CreateGPUDelegate(
-    tflite::FlatBufferModel* model) {
-#if defined(__ANDROID__)
+TfLiteDelegatePtr CreateGPUDelegate() {
+#if TFLITE_SUPPORTS_GPU_DELEGATE
   TfLiteGpuDelegateOptionsV2 options = TfLiteGpuDelegateOptionsV2Default();
-  options.is_precision_loss_allowed = 1;
+  options.inference_priority1 = TFLITE_GPU_INFERENCE_PRIORITY_MIN_LATENCY;
   options.inference_preference =
       TFLITE_GPU_INFERENCE_PREFERENCE_SUSTAINED_SPEED;
 
-  return CreateGPUDelegate(model, &options);
+  return CreateGPUDelegate(&options);
 #else
-  return Interpreter::TfLiteDelegatePtr(nullptr, [](TfLiteDelegate*) {});
-#endif  // defined(__ANDROID__)
+  return tools::CreateNullDelegate();
+#endif  // TFLITE_SUPPORTS_GPU_DELEGATE
+}
+
+TfLiteDelegatePtr CreateHexagonDelegate(
+    const std::string& library_directory_path, bool profiling) {
+#if TFLITE_ENABLE_HEXAGON
+  TfLiteHexagonDelegateOptions options = {0};
+  options.print_graph_profile = profiling;
+  return CreateHexagonDelegate(&options, library_directory_path);
+#else
+  return tools::CreateNullDelegate();
+#endif  // TFLITE_ENABLE_HEXAGON
+}
+
+#if TFLITE_ENABLE_HEXAGON
+TfLiteDelegatePtr CreateHexagonDelegate(
+    const TfLiteHexagonDelegateOptions* options,
+    const std::string& library_directory_path) {
+  if (library_directory_path.empty()) {
+    TfLiteHexagonInit();
+  } else {
+    TfLiteHexagonInitWithPath(library_directory_path.c_str());
+  }
+
+  TfLiteDelegate* delegate = TfLiteHexagonDelegateCreate(options);
+  if (!delegate) {
+    TfLiteHexagonTearDown();
+    return tools::CreateNullDelegate();
+  }
+  return TfLiteDelegatePtr(delegate, [](TfLiteDelegate* delegate) {
+    TfLiteHexagonDelegateDelete(delegate);
+    TfLiteHexagonTearDown();
+  });
+}
+#endif  // TFLITE_ENABLE_HEXAGON
+
+#if defined(__s390x__) || defined(TFLITE_WITHOUT_XNNPACK)
+TfLiteDelegatePtr CreateXNNPACKDelegate(int num_threads) {
+  return tools::CreateNullDelegate();
+}
+#else
+TfLiteDelegatePtr CreateXNNPACKDelegate() {
+  TfLiteXNNPackDelegateOptions xnnpack_options =
+      TfLiteXNNPackDelegateOptionsDefault();
+  return CreateXNNPACKDelegate(&xnnpack_options);
+}
+
+TfLiteDelegatePtr CreateXNNPACKDelegate(
+    const TfLiteXNNPackDelegateOptions* xnnpack_options) {
+  auto xnnpack_delegate = TfLiteXNNPackDelegateCreate(xnnpack_options);
+  return TfLiteDelegatePtr(xnnpack_delegate, [](TfLiteDelegate* delegate) {
+    TfLiteXNNPackDelegateDelete(delegate);
+  });
+}
+
+TfLiteDelegatePtr CreateXNNPACKDelegate(int num_threads) {
+  auto opts = TfLiteXNNPackDelegateOptionsDefault();
+  // Note that we don't want to use the thread pool for num_threads == 1.
+  opts.num_threads = num_threads > 1 ? num_threads : 0;
+  return CreateXNNPACKDelegate(&opts);
+}
+#endif  // defined(__s390x__) || defined(TFLITE_WITHOUT_XNNPACK)
+
+TfLiteDelegatePtr CreateCoreMlDelegate() {
+#ifdef REAL_IPHONE_DEVICE
+  TfLiteCoreMlDelegateOptions coreml_options = {
+      .enabled_devices = TfLiteCoreMlDelegateAllDevices};
+  TfLiteDelegate* delegate = TfLiteCoreMlDelegateCreate(&coreml_options);
+  if (!delegate) {
+    return tools::CreateNullDelegate();
+  }
+  return TfLiteDelegatePtr(delegate, &TfLiteCoreMlDelegateDelete);
+#else
+  return tools::CreateNullDelegate();
+#endif  // REAL_IPHONE_DEVICE
 }
 
 }  // namespace evaluation

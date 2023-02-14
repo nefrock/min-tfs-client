@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for data_structures module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.autograph.operators import data_structures
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
@@ -106,11 +102,12 @@ class ListTest(test.TestCase):
     with self.cached_session() as sess:
       self.assertAllEqual(self.evaluate(t), [[1, 2, 3]])
 
-  @test_util.run_v1_only("b/117943489")
+  @test_util.run_deprecated_v1
   def test_append_tensorarray(self):
     l = tensor_array_ops.TensorArray(dtypes.int32, size=0, dynamic_size=True)
     l1 = data_structures.list_append(l, 1)
     l2 = data_structures.list_append(l1, 2)
+
     with self.cached_session() as sess:
       self.assertAllEqual(self.evaluate(l1.stack()), [1])
       self.assertAllEqual(self.evaluate(l2.stack()), [1, 2])

@@ -16,7 +16,6 @@ limitations under the License.
 #include "tensorflow/core/profiler/internal/advisor/tfprof_advisor.h"
 
 #include "tensorflow/core/lib/io/path.h"
-#include "tensorflow/core/lib/strings/str_util.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/test.h"
 
@@ -39,8 +38,8 @@ class TFProfAdvisorTest : public ::testing::Test {
   std::unique_ptr<TFGraphNode> CreateNode(const string& name,
                                           const string& type,
                                           std::map<string, string> attrs,
-                                          int64 step, int64 start_miros,
-                                          int64 end_rel_micros) {
+                                          int64_t step, int64_t start_miros,
+                                          int64_t end_rel_micros) {
     node_defs_.push_back(std::unique_ptr<NodeDef>(new NodeDef()));
     NodeDef* def = node_defs_.back().get();
 

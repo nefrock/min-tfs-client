@@ -20,9 +20,11 @@ limitations under the License.
 
 #include "tensorflow/core/framework/bounds_check.h"
 #include "tensorflow/core/framework/op_kernel.h"
+#include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/types.h"
 #include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/core/kernels/checkpoint_callback_manager.h"
 #include "tensorflow/core/kernels/save_restore_tensor.h"
 #include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/io/path.h"
@@ -98,6 +100,7 @@ class SaveV2 : public OpKernel {
     const Tensor& shape_and_slices = context->input(2);
     ValidateInputs(true /* is save op */, context, prefix, tensor_names,
                    shape_and_slices);
+    if (!context->status().ok()) return;
 
     const int kFixedInputs = 3;  // Prefix, tensor names, shape_and_slices.
     const int num_tensors = static_cast<int>(tensor_names.NumElements());
@@ -112,6 +115,7 @@ class SaveV2 : public OpKernel {
     for (int i = 0; i < num_tensors; ++i) {
       const string& tensor_name = tensor_names_flat(i);
       const Tensor& tensor = context->input(i + kFixedInputs);
+      VLOG(2) << "Starting save of " << tensor_name;
 
       if (!shape_and_slices_flat(i).empty()) {
         const string& shape_spec = shape_and_slices_flat(i);
@@ -133,8 +137,47 @@ class SaveV2 : public OpKernel {
       } else {
         OP_REQUIRES_OK(context, writer.Add(tensor_name, tensor));
       }
+
+      if (VLOG_IS_ON(5)) {
+        if (tensor.dtype() == DT_FLOAT) {
+          const float* t_data = tensor.flat<float>().data();
+          float min = std::numeric_limits<float>::infinity();
+          float max = -std::numeric_limits<float>::infinity();
+          double avg = 0.0;
+          for (int i = 0; i < tensor.NumElements(); ++i) {
+            if (t_data[i] < min) min = t_data[i];
+            if (t_data[i] > max) max = t_data[i];
+            avg += t_data[i];
+          }
+          VLOG(5) << " min " << min << " max " << max << " avg "
+                  << avg / tensor.NumElements() << " total elts "
+                  << tensor.NumElements();
+        }
+      }
+
+      VLOG(2) << "Done save of " << tensor_name;
     }
     OP_REQUIRES_OK(context, writer.Finish());
+    VLOG(1) << "Done BundleWriter, prefix_string: " << prefix_string;
+
+    ResourceMgr* resource_manager = context->resource_manager();
+    if (resource_manager != nullptr) {
+      checkpoint::CheckpointCallbackManager* checkpoint_callback_manager;
+      OP_REQUIRES_OK(
+          context,
+          resource_manager
+              ->LookupOrCreate<checkpoint::CheckpointCallbackManager>(
+                  resource_manager->default_container(),
+                  std::string(
+                      checkpoint::kCheckpointCallbackManagerResourceName),
+                  &checkpoint_callback_manager,
+                  [](checkpoint::CheckpointCallbackManager** out) {
+                    *out = new checkpoint::CheckpointCallbackManager();
+                    return OkStatus();
+                  }));
+      checkpoint_callback_manager->Save(prefix_string);
+      checkpoint_callback_manager->Unref();
+    }
   }
 };
 REGISTER_KERNEL_BUILDER(Name("SaveV2").Device(DEVICE_CPU), SaveV2);
@@ -156,6 +199,7 @@ class RestoreV2 : public OpKernel {
                                         " expected dtypes."));
     ValidateInputs(false /* not save op */, context, prefix, tensor_names,
                    shape_and_slices);
+    if (!context->status().ok()) return;
 
     const string& prefix_string = prefix.scalar<tstring>()();
 
@@ -182,6 +226,25 @@ class RestoreV2 : public OpKernel {
     // If found, invokes the V2 reader.
     OP_REQUIRES_OK(context, RestoreTensorsV2(context, prefix, tensor_names,
                                              shape_and_slices, dtypes_));
+
+    ResourceMgr* resource_manager = context->resource_manager();
+    if (resource_manager != nullptr) {
+      checkpoint::CheckpointCallbackManager* checkpoint_callback_manager;
+      OP_REQUIRES_OK(
+          context,
+          resource_manager
+              ->LookupOrCreate<checkpoint::CheckpointCallbackManager>(
+                  resource_manager->default_container(),
+                  std::string(
+                      checkpoint::kCheckpointCallbackManagerResourceName),
+                  &checkpoint_callback_manager,
+                  [](checkpoint::CheckpointCallbackManager** out) {
+                    *out = new checkpoint::CheckpointCallbackManager();
+                    return OkStatus();
+                  }));
+      checkpoint_callback_manager->Restore(prefix_string);
+      checkpoint_callback_manager->Unref();
+    }
   }
 
  private:
@@ -197,6 +260,8 @@ class MergeV2Checkpoints : public OpKernel {
       : OpKernel(context) {
     OP_REQUIRES_OK(context,
                    context->GetAttr("delete_old_dirs", &delete_old_dirs_));
+    OP_REQUIRES_OK(context, context->GetAttr("allow_missing_files",
+                                             &allow_missing_files_));
   }
 
   void Compute(OpKernelContext* context) override {
@@ -216,8 +281,9 @@ class MergeV2Checkpoints : public OpKernel {
         gtl::ArraySlice<tstring>(checkpoint_prefixes.flat<tstring>());
     Env* env = Env::Default();
     const string& merged_prefix = destination_prefix.scalar<tstring>()();
-    OP_REQUIRES_OK(
-        context, tensorflow::MergeBundles(env, input_prefixes, merged_prefix));
+    OP_REQUIRES_OK(context,
+                   tensorflow::MergeBundles(env, input_prefixes, merged_prefix,
+                                            allow_missing_files_));
 
     if (delete_old_dirs_) {
       const string merged_dir(io::Dirname(merged_prefix));
@@ -235,6 +301,10 @@ class MergeV2Checkpoints : public OpKernel {
  private:
   // On merge, whether or not to delete the input (temporary) directories.
   bool delete_old_dirs_;
+
+  // On merge, whether or not to relax condition that all input prefix filenames
+  // to exist.
+  bool allow_missing_files_;
 };
 REGISTER_KERNEL_BUILDER(Name("MergeV2Checkpoints").Device(DEVICE_CPU),
                         MergeV2Checkpoints);

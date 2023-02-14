@@ -34,7 +34,7 @@ class Tensor;
 // If the evaluation is successful, `evaluated` will be set to true and
 // `tensor`s value returned in `result`. Otherwise `evaluated` will be set to
 // false. An error status is returned if something is wrong with the graph or
-// input. Note that `evaluated` may set to false if Status::OK() is returned.
+// input. Note that `evaluated` may set to false if OkStatus() is returned.
 //
 // Params:
 //   tensor - the tensor to be evaluated.
@@ -53,13 +53,17 @@ class Tensor;
 //     result size to cache.
 //   disable_constant_propagation - if true, only Const node values will be
 //     returned.
+//   outer_context - optional. The InferenceContext for the call node if inside
+//     a nested function. This is useful for doing constant propagation across
+//     Arg nodes.
 Status EvaluateConstantTensor(
     OutputTensor tensor, const ShapeRefiner& refiner,
-    const OpRegistryInterface& ops, int32 graph_def_version, bool* evaluated,
+    const OpRegistryInterface& ops, int32_t graph_def_version, bool* evaluated,
     Tensor* result, GraphRunner* graph_runner = nullptr,
     std::unordered_map<string, Tensor>* cached_values = nullptr,
-    int64 max_cached_value_size = 1024,
-    bool disable_constant_propagation = false);
+    int64_t max_cached_value_size = 1024,
+    bool disable_constant_propagation = false,
+    shape_inference::InferenceContext* outer_context = nullptr);
 
 }  // namespace tensorflow
 

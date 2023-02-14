@@ -33,14 +33,10 @@ limitations under the License.
 //   #endif
 
 #include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
-
-// FixedPoint header must be included after Tensor.
-// clang-format off
-#include "third_party/eigen3/unsupported/Eigen/CXX11/FixedPoint"
-// clang-format on
+#include "tensorflow/tsl/framework/fixedpoint/FixedPoint.h"
 
 #if defined(TENSORFLOW_USE_MKLDNN_CONTRACTION_KERNEL)
-#include "mkldnn.h"
+#include "dnnl.h"
 #endif
 
 #include "tensorflow/core/platform/dynamic_annotations.h"
@@ -125,15 +121,15 @@ struct gemm_pack_colmajor_block<Scalar, IndexType, DataMapper,
 
 template <typename Scalar, typename IndexType, typename OutputMapper,
           bool ConjugateLhs = false, bool ConjugateRhs = false>
-struct mkldnn_gemm_kernel;
+struct dnnl_gemm_kernel;
 
-// mkldnn_gemm_kernel for floats defined as a thin layer on top of mkldnn_sgemm.
+// dnnl_gemm_kernel for floats defined as a thin layer on top of mkldnn_sgemm.
 template <typename IndexType, typename OutputMapper, bool ConjugateLhs,
           bool ConjugateRhs>
-struct mkldnn_gemm_kernel</*Scalar*/ float, IndexType, OutputMapper,
-                          ConjugateLhs, ConjugateRhs> {
-  static_assert(!ConjugateLhs, "MKL-DNN kernel doesn't support ConjugateLhs");
-  static_assert(!ConjugateRhs, "MKL-DNN kernel doesn't support ConjugateRhs");
+struct dnnl_gemm_kernel</*Scalar*/ float, IndexType, OutputMapper, ConjugateLhs,
+                        ConjugateRhs> {
+  static_assert(!ConjugateLhs, "DNNL kernel doesn't support ConjugateLhs");
+  static_assert(!ConjugateRhs, "DNNL kernel doesn't support ConjugateRhs");
 
   static constexpr int kComputeStrideFromBlockDimensions = -1;
 
@@ -163,14 +159,22 @@ struct mkldnn_gemm_kernel</*Scalar*/ float, IndexType, OutputMapper,
     ldB = ldB == kComputeStrideFromBlockDimensions ? k : ldB;
     const int ldC = static_cast<int>(output.stride());
 
-    mkldnn_status_t st = mkldnn_sgemm(
-        &transposeA, &transposeB, &m, &n, &k, &alpha, blockA, &ldA, blockB,
-        &ldB, &beta, const_cast<ResScalar*>(output.data()), &ldC);
+    // DNNL takes row-major matrices. Our packed column-major matrices can be
+    // viewed as a transposed row-major matrix, i.e.,
+    //   C_colmajor = C_rowmajor^T = (A_rowmajor * B_rowmajor)^T
+    //                             = B_rowmajor^T * A_rowmajor^T
+    //                             = B_colmajor * A_colmajor
+    // So we can just swap the input matrices A and B for DNNL.
+    // TODO(penporn): Switch to row-major packing instead.
+    dnnl_status_t st =
+        dnnl_sgemm(transposeB, transposeA, n, m, k, alpha, blockB, ldB, blockA,
+                   ldA, beta, const_cast<ResScalar*>(output.data()), ldC);
     eigen_assert(st == 0);
 
 #if DYNAMIC_ANNOTATIONS_ENABLED == 1 || defined(MEMORY_SANITIZER)
     for (IndexType col = 0; col < cols; ++col) {
       ResScalar* row_base = &output(0, col);
+      EIGEN_UNUSED_VARIABLE(row_base);  // Suppress unused variable error.
       TF_ANNOTATE_MEMORY_IS_INITIALIZED(row_base, sizeof(ResScalar) * rows);
     }
 #endif
@@ -185,8 +189,8 @@ struct mkldnn_gemm_kernel</*Scalar*/ float, IndexType, OutputMapper,
 template <typename IndexType, typename OutputMapper, bool ConjugateLhs = false,
           bool ConjugateRhs = false>
 struct mkldnn_gemm_s8u8s32_kernel {
-  static_assert(!ConjugateLhs, "MKL-DNN kernel doesn't support ConjugateLhs");
-  static_assert(!ConjugateRhs, "MKL-DNN kernel doesn't support ConjugateRhs");
+  static_assert(!ConjugateLhs, "DNNL kernel doesn't support ConjugateLhs");
+  static_assert(!ConjugateRhs, "DNNL kernel doesn't support ConjugateRhs");
 
   static constexpr int kComputeStrideFromBlockDimensions = -1;
 
@@ -228,19 +232,26 @@ struct mkldnn_gemm_s8u8s32_kernel {
     const auto* B = reinterpret_cast<const uint8_t*>(blockB);
     auto* C = reinterpret_cast<int32_t*>(const_cast<ResScalar*>(output.data()));
 
-    mkldnn_status_t st =
-        mkldnn_gemm_s8u8s32(&transposeA, &transposeB, &offsetc,  //
-                            &m, &n, &k,                          //
-                            &alpha,                              //
-                            A, &ldA, &ao,                        //
-                            B, &ldB, &bo,                        //
-                            &beta,                               //
-                            C, &ldC, &co);
+    // DNNL takes row-major matrices. Our packed column-major matrices can be
+    // viewed as a transposed row-major matrix, i.e., C_colmajor = C_rowmajor^T.
+    // C_colmajor = C_rowmajor^T = (A_rowmajor * B_rowmajor)^T
+    //                           = B_rowmajor^T * A_rowmajor^T
+    //                           = B_colmajor * A_colmajor
+    // So we can just swap the input matrices A and B for DNNL.
+    // TODO(penporn): Switch to row-major packing instead.
+    dnnl_status_t st = dnnl_gemm_u8s8s32(transposeB, transposeA, offsetc,  //
+                                         n, m, k,                          //
+                                         alpha,                            //
+                                         B, ldB, bo,                       //
+                                         A, ldA, ao,                       //
+                                         beta,                             //
+                                         C, ldC, &co);
     eigen_assert(st == 0);
 
 #if DYNAMIC_ANNOTATIONS_ENABLED == 1 || defined(MEMORY_SANITIZER)
     for (IndexType col = 0; col < cols; ++col) {
       ResScalar* row_base = &output(0, col);
+      EIGEN_UNUSED_VARIABLE(row_base);  // Suppress unused variable error.
       TF_ANNOTATE_MEMORY_IS_INITIALIZED(row_base, sizeof(ResScalar) * rows);
     }
 #endif
@@ -270,10 +281,10 @@ class TensorContractionBlocking<float, float, float, StorageIndex,
   static constexpr float kScaleN = 1.0;
 
   // Mkldnn Avx/Avx2/Avx512 unroll factors are: 8/16/48.
-  static const StorageIndex kUnrollM = 48;
+  static constexpr StorageIndex kUnrollM = 48;
 
   // Mkldnn Avx/Avx2/Avx512 unroll factors are: 6/6/8.
-  static const StorageIndex kUnrollN = 24;
+  static constexpr StorageIndex kUnrollN = 24;
 
  public:
   TensorContractionBlocking(StorageIndex k, StorageIndex m, StorageIndex n,
@@ -292,7 +303,7 @@ class TensorContractionBlocking<float, float, float, StorageIndex,
     if (kc_ <= 0 || mc_ <= 0 || nc_ <= 0) return;
 
     // If we are using default Eigen gebp kernel there is no need to adjust the
-    // block sizes for MKL-DNN.
+    // block sizes for DNNL.
     if (!UseCustomContractionKernels()) return;
 
     // 2. And refine them to work well with mkldnn sgemm.
@@ -330,8 +341,8 @@ class TensorContractionBlocking<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
 
   // Default Eigen block heuristics for `QInt8xQUInt8 -> QInt32` are wrong.
   // Mostly because gebp_traits are not correctly defined. But we know that we
-  // are going to use s8u8s32_gemm from MKL-DNN, so we use float heuristics, and
-  // adjust them to work well with MKL-DNN.
+  // are going to use s8u8s32_gemm from DNNL, so we use float heuristics, and
+  // adjust them to work well with DNNL.
   using LhsScalar = Eigen::QInt8;
   using RhsScalar = Eigen::QUInt8;
   using ResScalar = Eigen::QInt32;
@@ -431,10 +442,11 @@ struct DirectColMajorAccess {
       data = Side == Lhs ? data : data + vert_offset + horiz_offset * stride;  \
                                                                                \
       const bool is_no_op_packing = stride == rows;                            \
-      const StorageIndex adressable_mem = (stride * cols * sizeof(Scalar));    \
+      const StorageIndex addressable_mem = (stride * cols * sizeof(Scalar));   \
       const bool use_direct_access =                                           \
           is_no_op_packing || num_kernels == 1 /* used once */ ||              \
-          ((num_kernels == 2) && (adressable_mem < (256 << 10) /* 256 kb */)); \
+          ((num_kernels == 2) &&                                               \
+           (addressable_mem < (256 << 10) /* 256 kb */));                      \
                                                                                \
       if (use_direct_access) {                                                 \
         block->is_direct_access = true;                                        \
@@ -497,7 +509,7 @@ struct GemmKernelProvider {
 template <typename StorageIndex, typename OutputMapper>
 struct GemmKernelProvider<float, float, float, StorageIndex, OutputMapper> {
   enum { Defined = 1 };
-  using GemmKernel = mkldnn_gemm_kernel<float, StorageIndex, OutputMapper>;
+  using GemmKernel = dnnl_gemm_kernel<float, StorageIndex, OutputMapper>;
 };
 
 template <typename StorageIndex, typename OutputMapper>
@@ -521,14 +533,7 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
                                  RhsMapper> {                                  \
     TensorContractionKernel(StorageIndex m, StorageIndex k, StorageIndex n,    \
                             StorageIndex bm, StorageIndex bk, StorageIndex bn) \
-        : m(m),                                                                \
-          k(k),                                                                \
-          n(n),                                                                \
-          bm(bm),                                                              \
-          bk(bk),                                                              \
-          bn(bn),                                                              \
-          nm0(bm > 0 ? divup(m, bm) : 0),                                      \
-          nn0(bn > 0 ? divup(n, bn) : 0) {}                                    \
+        : m(m), k(k), n(n), bm(bm), bk(bk), bn(bn) {}                          \
                                                                                \
     enum { HasBeta = true };                                                   \
                                                                                \
@@ -613,7 +618,8 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
     }                                                                          \
                                                                                \
     template <typename Device>                                                 \
-    EIGEN_DEVICE_FUNC void deallocate(Device& d, BlockMemHandle handle) {      \
+    EIGEN_DEVICE_FUNC static void deallocate(Device& d,                        \
+                                             BlockMemHandle handle) {          \
       BlockMemAllocator::deallocate(d, handle);                                \
     }                                                                          \
                                                                                \
@@ -623,7 +629,8 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
       if (UseCustomContractionKernels()) {                                     \
         const bool is_direct_access =                                          \
             DirectLhsAccess::value &&                                          \
-            DirectLhsAccess::block(data_mapper, rows, depth, nn0, lhsBlock);   \
+            DirectLhsAccess::block(data_mapper, rows, depth,                   \
+                                   bn > 0 ? divup(n, bn) : 0, lhsBlock);       \
                                                                                \
         if (!is_direct_access) {                                               \
           lhsBlock->is_direct_access = false;                                  \
@@ -642,7 +649,8 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
       if (UseCustomContractionKernels()) {                                     \
         const bool is_direct_access =                                          \
             DirectRhsAccess::value &&                                          \
-            DirectRhsAccess::block(data_mapper, depth, cols, nm0, rhsBlock);   \
+            DirectRhsAccess::block(data_mapper, depth, cols,                   \
+                                   bm > 0 ? divup(m, bm) : 0, rhsBlock);       \
                                                                                \
         if (!is_direct_access) {                                               \
           rhsBlock->is_direct_access = false;                                  \
@@ -691,7 +699,7 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
         /* the output mapper manually.                                      */ \
         /* WARNING(ezhulenev): This is optimized into a memset in a loop,   */ \
         /* could be much slower for small matrices. Currently this code     */ \
-        /* path used only for testing, and perormance does not matter.      */ \
+        /* path used only for testing, and performance does not matter.     */ \
         if (beta == 0.0) {                                                     \
           for (StorageIndex col = 0; col < cols; ++col) {                      \
             ResScalar* output_base = &output_mapper(0, col);                   \
@@ -720,9 +728,6 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
     const StorageIndex bm;                                                     \
     const StorageIndex bk;                                                     \
     const StorageIndex bn;                                                     \
-    /* Number of kernels for each dimension. */                                \
-    const StorageIndex nm0;                                                    \
-    const StorageIndex nn0;                                                    \
   }
 
 // Tensor contraction kernel that do not fallback on Eigen. Currently not all
@@ -737,14 +742,7 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
                                  RhsMapper> {                                  \
     TensorContractionKernel(StorageIndex m, StorageIndex k, StorageIndex n,    \
                             StorageIndex bm, StorageIndex bk, StorageIndex bn) \
-        : m(m),                                                                \
-          k(k),                                                                \
-          n(n),                                                                \
-          bm(bm),                                                              \
-          bk(bk),                                                              \
-          bn(bn),                                                              \
-          nm0(bm > 0 ? divup(m, bm) : 0),                                      \
-          nn0(bn > 0 ? divup(n, bn) : 0) {}                                    \
+        : m(m), k(k), n(n), bm(bm), bk(bk), bn(bn) {}                          \
                                                                                \
     enum { HasBeta = true };                                                   \
                                                                                \
@@ -815,7 +813,8 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
     }                                                                          \
                                                                                \
     template <typename Device>                                                 \
-    EIGEN_DEVICE_FUNC void deallocate(Device& d, BlockMemHandle handle) {      \
+    EIGEN_DEVICE_FUNC static void deallocate(Device& d,                        \
+                                             BlockMemHandle handle) {          \
       BlockMemAllocator::deallocate(d, handle);                                \
     }                                                                          \
                                                                                \
@@ -824,7 +823,8 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
         const StorageIndex depth, const StorageIndex rows) {                   \
       const bool is_direct_access =                                            \
           DirectLhsAccess::value &&                                            \
-          DirectLhsAccess::block(data_mapper, rows, depth, nn0, lhsBlock);     \
+          DirectLhsAccess::block(data_mapper, rows, depth,                     \
+                                 bn > 0 ? divup(n, bn) : 0, lhsBlock);         \
                                                                                \
       if (!is_direct_access) {                                                 \
         lhsBlock->is_direct_access = false;                                    \
@@ -837,7 +837,8 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
         const StorageIndex depth, const StorageIndex cols) {                   \
       const bool is_direct_access =                                            \
           DirectRhsAccess::value &&                                            \
-          DirectRhsAccess::block(data_mapper, depth, cols, nm0, rhsBlock);     \
+          DirectRhsAccess::block(data_mapper, depth, cols,                     \
+                                 bm > 0 ? divup(m, bm) : 0, rhsBlock);         \
                                                                                \
       if (!is_direct_access) {                                                 \
         rhsBlock->is_direct_access = false;                                    \
@@ -887,9 +888,6 @@ struct GemmKernelProvider<Eigen::QInt32, Eigen::QInt8, Eigen::QUInt8,
     const StorageIndex bm;                                                     \
     const StorageIndex bk;                                                     \
     const StorageIndex bn;                                                     \
-    /* Number of kernels for each dimension. */                                \
-    const StorageIndex nm0;                                                    \
-    const StorageIndex nn0;                                                    \
   }
 
 REGISTER_TENSOR_CONTRACTION_KERNEL_WITH_FALLBACK(float, float, float);

@@ -12,11 +12,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <stdint.h>
+
+#include <vector>
+
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace {
@@ -55,7 +57,7 @@ TEST(RangeOpModel, Simple) {
   model.PopulateTensor<int32_t>(model.start(), {0});
   model.PopulateTensor<int32_t>(model.limit(), {4});
   model.PopulateTensor<int32_t>(model.delta(), {1});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4));
   EXPECT_THAT(model.GetOutput(), ElementsAre(0, 1, 2, 3));
 }
@@ -65,7 +67,7 @@ TEST(RangeOpModel, DeltaGreaterThanOne) {
   model.PopulateTensor<int32_t>(model.start(), {2});
   model.PopulateTensor<int32_t>(model.limit(), {9});
   model.PopulateTensor<int32_t>(model.delta(), {2});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4));
   EXPECT_THAT(model.GetOutput(), ElementsAre(2, 4, 6, 8));
 }
@@ -75,7 +77,7 @@ TEST(RangeOpModel, NegativeDelta) {
   model.PopulateTensor<int32_t>(model.start(), {10});
   model.PopulateTensor<int32_t>(model.limit(), {3});
   model.PopulateTensor<int32_t>(model.delta(), {-3});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(3));
   EXPECT_THAT(model.GetOutput(), ElementsAre(10, 7, 4));
 }
@@ -85,7 +87,7 @@ TEST(RangeOpModel, FloatSimple) {
   model.PopulateTensor<float>(model.start(), {0});
   model.PopulateTensor<float>(model.limit(), {4});
   model.PopulateTensor<float>(model.delta(), {1});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4));
   EXPECT_THAT(model.GetOutput(), ElementsAre(0, 1, 2, 3));
 }
@@ -95,7 +97,7 @@ TEST(RangeOpModel, FloatDeltaGreaterThanOne) {
   model.PopulateTensor<float>(model.start(), {2});
   model.PopulateTensor<float>(model.limit(), {9});
   model.PopulateTensor<float>(model.delta(), {2});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(4));
   EXPECT_THAT(model.GetOutput(), ElementsAre(2, 4, 6, 8));
 }
@@ -105,9 +107,19 @@ TEST(RangeOpModel, FloatNegativeDelta) {
   model.PopulateTensor<float>(model.start(), {10});
   model.PopulateTensor<float>(model.limit(), {3});
   model.PopulateTensor<float>(model.delta(), {-3});
-  model.Invoke();
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
   EXPECT_THAT(model.GetOutputShape(), ElementsAre(3));
   EXPECT_THAT(model.GetOutput(), ElementsAre(10, 7, 4));
+}
+
+TEST(RangeOpModel, EmptyOutput) {
+  RangeOpModel<int32_t> model(TensorType_INT32);
+  model.PopulateTensor<int32_t>(model.start(), {0});
+  model.PopulateTensor<int32_t>(model.limit(), {0});
+  model.PopulateTensor<int32_t>(model.delta(), {1});
+  ASSERT_EQ(model.Invoke(), kTfLiteOk);
+  EXPECT_THAT(model.GetOutputShape(), ElementsAre(0));
+  EXPECT_THAT(model.GetOutput(), ElementsAre());
 }
 
 }  // namespace

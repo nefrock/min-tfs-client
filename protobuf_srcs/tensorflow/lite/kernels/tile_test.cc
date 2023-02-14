@@ -12,12 +12,17 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+#include <stdint.h>
+
+#include <initializer_list>
+#include <string>
+#include <vector>
+
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/interpreter.h"
-#include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
+#include "tensorflow/lite/string_type.h"
 
 namespace tflite {
 namespace {
@@ -93,7 +98,7 @@ void Check(std::initializer_list<int> input_shape,
       TileOpConstModel<MultipliersType> m(input_shape, input_type,
                                           multiply_type, multipliers_data);
       m.SetInput(input_data);
-      m.Invoke();
+      ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
       EXPECT_THAT(m.GetOutputShape(), ElementsAreArray(exp_output_shape));
       EXPECT_THAT(m.template GetOutput<InputType>(),
@@ -104,7 +109,7 @@ void Check(std::initializer_list<int> input_shape,
       TileOpDynamicModel m(input_shape, input_type, multiply_type);
       m.SetInput(input_data);
       m.SetMultipliers(multipliers_data);
-      m.Invoke();
+      ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
       EXPECT_THAT(m.GetOutputShape(), ElementsAreArray(exp_output_shape));
       EXPECT_THAT(m.template GetOutput<InputType>(),
@@ -200,6 +205,64 @@ TEST_P(TileTest, Int64Matrix64Multipliers) {
       /*exp_output_data=*/{11, 12, 13, 21, 22, 23, 11, 12, 13, 21, 22, 23},
       /*input_type=*/TensorType_INT64,
       /*multiply_type=*/TensorType_INT64, GetParam());
+}
+
+TEST_P(TileTest, Int8Matrix) {
+  if (SingleOpModel::GetForceUseNnapi()) {
+    return;
+  }
+  Check<int8_t>(
+      /*input_shape=*/{2, 3},
+      /*input_data=*/{11, 12, 13, 21, 22, 23},
+      /*multipliers_data=*/{2, 1}, /*exp_output_shape=*/{4, 3},
+      /*exp_output_data=*/{11, 12, 13, 21, 22, 23, 11, 12, 13, 21, 22, 23},
+      /*input_type=*/TensorType_INT8,
+      /*multiply_type=*/TensorType_INT32, GetParam());
+}
+
+TEST_P(TileTest, StringMatrix) {
+  Check<std::string>(
+      /*input_shape=*/{2, 3},
+      /*input_data=*/{"AA", "AB", "AC", "BA", "BB", "BC"},
+      /*multipliers_data=*/{1, 2}, /*exp_output_shape=*/{2, 6},
+      /*exp_output_data=*/
+      {"AA", "AB", "AC", "AA", "AB", "AC", "BA", "BB", "BC", "BA", "BB", "BC"},
+      /*input_type=*/TensorType_STRING,
+      /*multiply_type=*/TensorType_INT32, GetParam());
+}
+
+TEST_P(TileTest, StringMatrix64Multipliers) {
+  Check<std::string, int64_t>(
+      /*input_shape=*/{2, 3},
+      /*input_data=*/{"AA", "AB", "AC", "BA", "BB", "BC"},
+      /*multipliers_data=*/{2, 1}, /*exp_output_shape=*/{4, 3},
+      /*exp_output_data=*/
+      {"AA", "AB", "AC", "BA", "BB", "BC", "AA", "AB", "AC", "BA", "BB", "BC"},
+      /*input_type=*/TensorType_STRING,
+      /*multiply_type=*/TensorType_INT64, GetParam());
+}
+
+TEST_P(TileTest, StringMatrix2) {
+  Check<std::string>(
+      /*input_shape=*/{3, 2, 1},
+      /*input_data=*/{"AA", "AB", "AC", "BA", "BB", "BC"},
+      /*multipliers_data=*/{2, 2, 2}, /*exp_output_shape=*/{6, 4, 2},
+      /*exp_output_data=*/
+      {"AA", "AA", "AB", "AB", "AA", "AA", "AB", "AB", "AC", "AC", "BA", "BA",
+       "AC", "AC", "BA", "BA", "BB", "BB", "BC", "BC", "BB", "BB", "BC", "BC",
+       "AA", "AA", "AB", "AB", "AA", "AA", "AB", "AB", "AC", "AC", "BA", "BA",
+       "AC", "AC", "BA", "BA", "BB", "BB", "BC", "BC", "BB", "BB", "BC", "BC"},
+      /*input_type=*/TensorType_STRING,
+      /*multiply_type=*/TensorType_INT32, GetParam());
+}
+
+TEST(TileTest, TestEmptyInput) {
+  TileOpDynamicModel m({2, 1, 3}, TensorType_INT32, TensorType_INT32);
+  m.SetInput({11, 12, 13, 21, 22, 23});
+  m.SetMultipliers({2, 0, 2});
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
+
+  EXPECT_THAT(m.GetOutputShape(), ElementsAreArray({4, 0, 6}));
 }
 
 INSTANTIATE_TEST_SUITE_P(TileTest, TileTest,

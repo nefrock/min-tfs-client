@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Curses-Based Command-Line Interface of TensorFlow Debugger (tfdbg)."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import collections
 import curses
 from curses import textpad
@@ -25,7 +21,6 @@ import signal
 import sys
 import threading
 
-from six.moves import xrange  # pylint: disable=redefined-builtin
 
 from tensorflow.python.debug.cli import base_ui
 from tensorflow.python.debug.cli import cli_shared
@@ -179,7 +174,7 @@ class ScrollBar(object):
 
       layout = debugger_cli_common.RichTextLines(
           [up_text], font_attr_segs={0: [(0, width, self.BASE_ATTR)]})
-      for i in xrange(1, self._scroll_bar_height - 1):
+      for i in range(1, self._scroll_bar_height - 1):
         font_attr_segs = foreground_font_attr_segs if i == block_y else None
         layout.append(empty_line, font_attr_segs=font_attr_segs)
       layout.append(down_text, font_attr_segs=foreground_font_attr_segs)
@@ -481,7 +476,7 @@ class CursesUI(base_ui.BaseUI):
       # Remove SIGINT handler.
       signal.signal(signal.SIGINT, signal.SIG_DFL)
     except ValueError:
-     # Can't catch signals unless you're the main thread.
+      # Can't catch signals unless you're the main thread.
       pass
 
   def run_ui(self,
@@ -965,7 +960,7 @@ class CursesUI(base_ui.BaseUI):
     """Erase existing text in command textpad."""
 
     existing_len = len(self._command_textbox.gather())
-    for _ in xrange(existing_len):
+    for _ in range(existing_len):
       self._command_textbox.do_command(self.BACKSPACE_KEY)
 
   def _screen_draw_text_line(self, row, line, attr=curses.A_NORMAL, color=None):
@@ -1159,7 +1154,7 @@ class CursesUI(base_ui.BaseUI):
     # Create new output pad.
     pad = self._screen_new_output_pad(rows, cols)
 
-    for i in xrange(len(output.lines)):
+    for i in range(len(output.lines)):
       if i in output.font_attr_segs:
         self._screen_add_line_to_output_pad(
             pad, i, output.lines[i], color_segments=output.font_attr_segs[i])
@@ -1214,7 +1209,7 @@ class CursesUI(base_ui.BaseUI):
     """Pad the whitespace at the end of a line with the default color pair.
 
     Prevents spurious color pairs from appearing at the end of the lines in
-    certain text terimnals.
+    certain text terminals.
 
     Args:
       pad: The curses pad object to operate on.

@@ -1,6 +1,6 @@
 package(
     default_visibility = ["//visibility:public"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 cc_library(
@@ -10,6 +10,8 @@ cc_library(
     hdrs = ["interpreter_utils.h"],
     deps = [
         "//tensorflow/lite:framework",
+        "//tensorflow/lite:string",
+        "//tensorflow/lite/c:common",
         "//tensorflow/lite/core/api",
         "//tensorflow/lite/delegates/gpu/common:status",
         "//tensorflow/lite/delegates/gpu/common:tensor",

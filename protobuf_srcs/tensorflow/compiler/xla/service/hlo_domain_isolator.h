@@ -35,7 +35,7 @@ class HloDomainIsolator : public HloModulePass {
   // Creates a new kDomain instruction for the edge between the use instruction
   // (the first HloInstruction argument), and the operand instruction (the
   // third HloInstruction argument) if the interesting attribute of the
-  // instruction differes from the attribute of the root (the second
+  // instruction differences from the attribute of the root (the second
   // HloInstruction argument).
   // Returns nullptr in case no domain separation is necessary.
   using DomainCreator = std::function<HloInstruction*(
@@ -45,7 +45,13 @@ class HloDomainIsolator : public HloModulePass {
 
   absl::string_view name() const override { return "domain_isolator"; }
 
-  StatusOr<bool> Run(HloModule* module) override;
+  // Update domains for an instruction.
+  StatusOr<bool> UpdateDomains(HloInstruction* instruction);
+
+  using HloPassInterface::Run;
+  StatusOr<bool> Run(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
  private:
   DomainCreatorFactory creator_factory_;

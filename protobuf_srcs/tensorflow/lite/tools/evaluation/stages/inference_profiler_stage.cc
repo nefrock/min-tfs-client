@@ -16,6 +16,7 @@ limitations under the License.
 
 #include <cmath>
 #include <limits>
+#include <memory>
 #include <random>
 
 #include "tensorflow/core/platform/logging.h"
@@ -68,11 +69,13 @@ float CalculateAverageError(T* reference, T* test, int64_t num_elements) {
 
 }  // namespace
 
-TfLiteStatus InferenceProfilerStage::Init() {
+TfLiteStatus InferenceProfilerStage::Init(
+    const DelegateProviders* delegate_providers) {
   // Initialize TfliteInferenceStage with the user-provided
   // TfliteInferenceParams.
-  test_stage_.reset(new TfliteInferenceStage(config_));
-  if (test_stage_->Init() != kTfLiteOk) return kTfLiteError;
+  test_stage_ = std::make_unique<TfliteInferenceStage>(config_);
+  if (test_stage_->Init(delegate_providers) != kTfLiteOk) return kTfLiteError;
+  LOG(INFO) << "Test interpreter has been initialized.";
 
   // Initialize a reference TfliteInferenceStage that uses the given model &
   // num_runs, but maintains the rest of TfliteInferenceParams to default.
@@ -84,8 +87,9 @@ TfLiteStatus InferenceProfilerStage::Init() {
       config_.specification().tflite_inference_params().model_file_path());
   params->set_invocations_per_run(
       config_.specification().tflite_inference_params().invocations_per_run());
-  reference_stage_.reset(new TfliteInferenceStage(reference_config));
+  reference_stage_ = std::make_unique<TfliteInferenceStage>(reference_config);
   if (reference_stage_->Init() != kTfLiteOk) return kTfLiteError;
+  LOG(INFO) << "Reference interpreter (1 thread on CPU) has been initialized.";
 
   model_info_ = reference_stage_->GetModelInfo();
 

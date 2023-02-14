@@ -71,8 +71,21 @@ class Stat {
                    : static_cast<HighPrecisionValueType>(sum_) / count_;
   }
 
+  // Returns sample variance.
+  ValueType sample_variance() const {
+    return all_same()
+               ? 0
+               : (squared_sum_ - std::pow(sum_, 2.0) / count_) / (count_ - 1);
+  }
+
+  // Returns population variance.
+  ValueType variance() const {
+    return all_same() ? 0 : (squared_sum_ / count_) - (avg() * avg());
+  }
+
+  // Returns population stddev.
   ValueType std_deviation() const {
-    return all_same() ? 0 : sqrt(squared_sum_ / count_ - avg() * avg());
+    return all_same() ? 0 : std::sqrt(variance());
   }
 
   void OutputToStream(std::ostream* stream) const {
@@ -157,8 +170,7 @@ class StatsCalculator {
     std::string name;
     std::string type;
     int64_t run_order;
-    Stat<int64_t> start_us;
-    Stat<int64_t> rel_end_us;
+    Stat<int64_t> elapsed_time;
     Stat<int64_t> mem_used;
     int64_t times_called;
   };
@@ -166,8 +178,7 @@ class StatsCalculator {
   const std::map<std::string, Detail>& GetDetails() const { return details_; }
 
   void AddNodeStats(const std::string& name, const std::string& type,
-                    int64_t run_order, int64_t start_us, int64_t rel_end_us,
-                    int64_t mem_used);
+                    int64_t run_order, int64_t rel_end_us, int64_t mem_used);
 
  private:
   void OrderNodesByMetric(SortingMetric sorting_metric,

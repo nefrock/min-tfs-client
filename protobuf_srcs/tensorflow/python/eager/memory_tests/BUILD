@@ -1,7 +1,7 @@
-load("//tensorflow:tensorflow.bzl", "cuda_py_test")
+load("//tensorflow:tensorflow.default.bzl", "cuda_py_test")
 
 package(
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 # NOTE: Do not add sharding to these tests. If tests run concurrently, they
@@ -11,24 +11,14 @@ package(
 py_library(
     name = "memory_test_util",
     srcs = ["memory_test_util.py"],
+    srcs_version = "PY3",
     visibility = ["//tensorflow:internal"],
-    deps = ["@six_archive//:six"],
 )
 
 cuda_py_test(
     name = "memory_test",
     size = "medium",
     srcs = ["memory_test.py"],
-    additional_deps = [
-        ":memory_test_util",
-        "//tensorflow/python/keras",
-        "//tensorflow/python/eager:backprop",
-        "//tensorflow/python/eager:test",
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:client_testlib",
-        "//tensorflow/python:framework_test_lib",
-        "@six_archive//:six",
-    ],
     tags = [
         "manual",
         "no_oss",
@@ -37,22 +27,32 @@ cuda_py_test(
     ],
     # TODO(b/140065350): Re-enable
     xla_enable_strict_auto_jit = False,
+    deps = [
+        ":memory_test_util",
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python:framework_test_lib",
+        "//tensorflow/python/eager:backprop",
+        "//tensorflow/python/eager:test",
+        "@six_archive//:six",
+    ],
 )
 
 cuda_py_test(
     name = "remote_memory_test",
     size = "medium",
     srcs = ["remote_memory_test.py"],
-    additional_deps = [
-        ":memory_test_util",
-        "//tensorflow/python/eager:backprop",
-        "//tensorflow/python/eager:remote",
-        "//tensorflow/python/eager:test",
-        "//tensorflow/python:array_ops",
-        "//tensorflow/python:client_testlib",
-    ],
     tags = [
+        "no_gpu",  # TODO(b/168058741): Enable the test for GPU
         "optonly",  # The test is too slow in non-opt mode
     ],
     xla_enable_strict_auto_jit = False,  # b/140261762
+    deps = [
+        ":memory_test_util",
+        "//tensorflow/python:array_ops",
+        "//tensorflow/python:client_testlib",
+        "//tensorflow/python/eager:backprop",
+        "//tensorflow/python/eager:remote",
+        "//tensorflow/python/eager:test",
+    ],
 )

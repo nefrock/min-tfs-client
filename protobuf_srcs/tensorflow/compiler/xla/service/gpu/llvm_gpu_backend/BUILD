@@ -1,8 +1,12 @@
 load("//tensorflow:tensorflow.bzl", "tf_cc_test")
+load(
+    "@local_config_rocm//rocm:build_defs.bzl",
+    "if_rocm_is_configured",
+)
 
 package(
     default_visibility = [":friends"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 package_group(
@@ -25,34 +29,43 @@ cc_library(
         "utils.h",
     ],
     deps = [
+        "@com_google_absl//absl/base",
+        "@com_google_absl//absl/memory",
+        "@com_google_absl//absl/strings",
+        "@com_google_absl//absl/strings:str_format",
+        "//tensorflow/tsl/platform:logging",
+        "@llvm-project//llvm:Analysis",
+        "@llvm-project//llvm:BitReader",
+        "@llvm-project//llvm:BitWriter",
+        "@llvm-project//llvm:CodeGen",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:IPO",
+        "@llvm-project//llvm:IRReader",
+        "@llvm-project//llvm:MC",
+        "@llvm-project//llvm:Linker",
+        "@llvm-project//llvm:NVPTXCodeGen",  # buildcleaner: keep
+        "@llvm-project//llvm:ObjCARC",  # buildcleaner: keep
+        "@llvm-project//llvm:Scalar",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//llvm:Target",
+        "//tensorflow/compiler/xla/service/gpu:metrics",
         "//tensorflow/compiler/xla:status_macros",
         "//tensorflow/compiler/xla:statusor",
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla:util",
         "//tensorflow/compiler/xla/service:hlo_module_config",
         "//tensorflow/compiler/xla/service/gpu:gpu_types",
-        "//tensorflow/compiler/xla/service/llvm_ir:llvm_util",
+        "//tensorflow/compiler/xla/service/llvm_ir:llvm_command_line_options",
+        "//tensorflow/compiler/xla/service/llvm_ir:llvm_type_conversion_util",
         "//tensorflow/core:lib",
         "//tensorflow/core:lib_internal",
-        "//tensorflow/core/profiler/lib:traceme",
-        "@com_google_absl//absl/memory",
-        "@com_google_absl//absl/strings",
-        "@com_google_absl//absl/strings:str_format",
-        "@llvm//:amdgpu_code_gen",
-        "@llvm//:analysis",
-        "@llvm//:bit_reader",
-        "@llvm//:bit_writer",
-        "@llvm//:code_gen",
-        "@llvm//:core",
-        "@llvm//:ipo",
-        "@llvm//:ir_reader",
-        "@llvm//:linker",
-        "@llvm//:nvptx_code_gen",  # buildcleaner: keep
-        "@llvm//:objc_arc",  # buildcleaner: keep
-        "@llvm//:scalar",
-        "@llvm//:support",
-        "@llvm//:target",
-    ],
+        "//tensorflow/tsl/profiler/lib:traceme",
+        "//tensorflow/tsl/platform:path",
+        "//tensorflow/tsl/util:env_var",
+    ] + if_rocm_is_configured([
+        "@local_config_rocm//rocm:rocm_headers",
+        "@llvm-project//llvm:AMDGPUCodeGen",
+    ]),
 )
 
 tf_cc_test(
@@ -67,8 +80,11 @@ tf_cc_test(
         "//tensorflow/compiler/xla:types",
         "//tensorflow/compiler/xla/tests:xla_internal_test_main",
         "//tensorflow/core:lib",
-        "//tensorflow/core:test",
-        "@llvm//:core",
-        "@llvm//:support",
+        "//tensorflow/tsl/platform:logging",
+        "//tensorflow/tsl/platform:path",
+        "//tensorflow/tsl/platform:resource_loader",
+        "//tensorflow/tsl/platform:test",
+        "@llvm-project//llvm:Core",
+        "@llvm-project//llvm:Support",
     ],
 )

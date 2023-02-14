@@ -16,551 +16,409 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/gpu/nccl_all_reduce_thunk.h"
 
 #include <chrono>  // NOLINT (required by TF interfaces)
+#include <cstdlib>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "absl/algorithm/container.h"
-#include "absl/container/flat_hash_set.h"
-#include "absl/memory/memory.h"
 #include "absl/strings/str_format.h"
-#include "absl/strings/str_join.h"
-#include "absl/types/optional.h"
-#include "absl/types/span.h"
-#include "third_party/nccl/nccl.h"
-#include "tensorflow/compiler/xla/refcounting_hash_map.h"
+#include "tensorflow/compiler/xla/layout_util.h"
 #include "tensorflow/compiler/xla/service/collective_ops_utils.h"
 #include "tensorflow/compiler/xla/service/hlo_casting_utils.h"
+#include "tensorflow/compiler/xla/service/hlo_computation.h"
 #include "tensorflow/compiler/xla/service/hlo_instructions.h"
+#include "tensorflow/compiler/xla/translate/hlo_to_mhlo/hlo_utils.h"
 #include "tensorflow/compiler/xla/util.h"
-#include "tensorflow/core/lib/core/blocking_counter.h"
-#include "tensorflow/core/platform/mutex.h"
-#include "tensorflow/stream_executor/cuda/cuda_activation.h"
+#include "tensorflow/compiler/xla/xla_data.pb.h"
+
+#if XLA_ENABLE_XCCL
+#include "tensorflow/compiler/xla/stream_executor/gpu/gpu_stream.h"
+#endif
 
 namespace xla {
 namespace gpu {
 
-// This file runs collective ops (i.e. ops that communicate between multiple
-// GPUs) using NCCL.  Currently only kAllReduce is implemented.
-//
-// Here's a high-level overview of how running an op works.
-//
-//  - Multiple threads call NcclAllReduceThunk::ExecuteOnStream.
-//  - All threads that "go together" (i.e. are participating in the "same"
-//    collective op) choose the same Rendezvous object from a global map.
-//  - Once all threads have arrived at the Rendezvous, we know exactly which
-//    GPUs are participating in the op, so we get or create a NcclClique
-//    containing those GPUs.
-//  - We perform the NCCL operation using the clique, then destroy the
-//    Rendezvous.  The clique is cached, see below.
-//
-// Creating NCCL cliques is expensive, so we cache them.  Our policy is, a thunk
-// keeps alive all cliques it's ever used.  When the thunk is destroyed, it
-// releases its handle on the cliques, and cliques whose refcounts go to 0 are
-// destroyed.
+Status RunAllReduce(ReductionKind reduction_kind,
+                    std::vector<DeviceBufferPair>& buffers, se::Stream& stream,
+                    ncclComm_t comm) {
+#if XLA_ENABLE_XCCL
+  int device_ordinal = stream.parent()->device_ordinal();
+  VLOG(3) << "Performing all-reduce from device ordinal: " << device_ordinal;
 
-/* static */ bool NcclAllReduceThunk::NcclIsEnabled() {
-  return true;  // Skylark selects this source file if NCCL is enabled.
+  ncclRedOp_t reduce_op = ToNcclReduction(reduction_kind);
+
+  se::gpu::GpuStreamHandle gpu_stream = se::gpu::AsGpuStreamValue(&stream);
+
+  XLA_CUDA_RETURN_IF_ERROR(ncclGroupStart());
+  for (size_t i = 0; i < buffers.size(); ++i) {
+    DeviceBufferPair& buffer = buffers[i];
+    const void* send_buffer = buffer.source_buffer.opaque();
+    void* recv_buffer = buffer.destination_buffer.opaque();
+
+    TF_ASSIGN_OR_RETURN(auto dtype_and_multiplier,
+                        ToNcclDataTypeAndCountMultiplier(buffer.element_type));
+    ncclDataType_t dtype = dtype_and_multiplier.first;
+    int64_t element_count = buffer.element_count * dtype_and_multiplier.second;
+
+    VLOG(3) << absl::StreamFormat(
+        "Calling ncclAllReduce(send_buffer=%p, recv_buffer=%p, count=%d, "
+        "comm=%p, stream=%p)",
+        send_buffer, recv_buffer, element_count, static_cast<const void*>(comm),
+        gpu_stream);
+
+    XLA_CUDA_RETURN_IF_ERROR(ncclAllReduce(send_buffer, recv_buffer,
+                                           element_count, dtype, reduce_op,
+                                           comm, gpu_stream));
+  }
+  return XLA_CUDA_STATUS(ncclGroupEnd());
+#else   // XLA_ENABLE_XCCL
+  return Unimplemented(
+      "NCCL support is not available: this binary was not built with a CUDA "
+      "compiler, which is necessary to build the NCCL source library.");
+#endif  // XLA_ENABLE_XCCL
 }
 
 namespace {
 
-using tensorflow::BlockingCounter;
-
-// Functions to translate an ncclResult_t/cudaError_t to a Status object.  Used
-// by the macros below.
-Status TranslateStatus(ncclResult_t s, const char* file, int64 line,
-                       const char* expr) {
-  if (s == ncclSuccess) {
-    return Status::OK();
-  }
-  return tensorflow::errors::Internal(
-      absl::StrFormat("%s:%d: NCCL operation %s failed: %s", file, line, expr,
-                      ncclGetErrorString(s)));
+bool IsValidOperand(mlir::Value operand) {
+  Shape shape = TypeToShape(operand.getType());
+  return LayoutUtil::IsDenseArray(shape) &&
+         IsTypeSupportedByNccl(shape.element_type());
 }
 
-Status TranslateStatus(cudaError_t s, const char* file, int64 line,
-                       const char* expr) {
-  if (s == cudaSuccess) {
-    return Status::OK();
-  }
-  return tensorflow::errors::Internal(
-      absl::StrFormat("%s:%d: CUDA operation %s failed: %s", file, line, expr,
-                      cudaGetErrorString(s)));
-}
+// Generally, the reduction op should be the only operation in the block, except
+// the terminator. However, if the type is bf16, the `BFloat16Normalization`
+// pass will have converted the op to float32 and added type conversions.
+// TODO(cjfj): Can we prevent the bf16 conversion for this computation?
+StatusOr<mlir::Operation*> FindReductionOp(mlir::Block& block) {
+  TF_RET_CHECK(block.getNumArguments() == 2);
+  mlir::Operation* terminator = block.getTerminator();
+  TF_RET_CHECK(terminator);
+  TF_RET_CHECK(terminator->getNumOperands() == 1);
+  mlir::Value result = terminator->getOperand(0);
+  TF_RET_CHECK(block.getArgument(0).getType() == result.getType());
+  TF_RET_CHECK(block.getArgument(1).getType() == result.getType());
 
-// Macros to return or warn on CUDA/NCCL errors.  (The same macro works for both
-// NCCL and CUDA errors.)
-//
-// It's tempting to say these macros belong in an XLA header somewhere, but in
-// practice we don't do much direct-to-CUDA-API stuff outside of this file.
-#define XLA_CUDA_RETURN_IF_ERROR(expr)                                       \
-  do {                                                                       \
-    Status s = ::xla::gpu::TranslateStatus(expr, __FILE__, __LINE__, #expr); \
-    if (!s.ok()) {                                                           \
-      return s;                                                              \
-    }                                                                        \
-  } while (0)
+  mlir::Operation* result_op = result.getDefiningOp();
+  TF_RET_CHECK(result_op);
 
-#define XLA_CUDA_WARN_IF_ERROR(expr)                                         \
-  do {                                                                       \
-    Status s = ::xla::gpu::TranslateStatus(expr, __FILE__, __LINE__, #expr); \
-    if (!s.ok()) {                                                           \
-      LOG(ERROR) << s.ToString();                                            \
-    }                                                                        \
-  } while (0)
-
-// RAII class owning a ncclComm_t, ensuring it doesn't leak.
-class NcclComm {
- public:
-  explicit NcclComm(ncclComm_t comm) : comm_(comm) {}
-
-  // Movable, but not copyable.
-  NcclComm(NcclComm&& c) noexcept : comm_(c.comm_) { c.comm_.reset(); }
-  NcclComm& operator=(NcclComm&& c) noexcept {
-    comm_ = c.comm_;
-    c.comm_.reset();
-    return *this;
-  }
-  NcclComm(const NcclComm&) = delete;
-  NcclComm& operator=(const NcclComm&) = delete;
-
-  ~NcclComm() {
-    if (comm_.has_value() && *comm_ != nullptr) {
-      VLOG(3) << absl::StreamFormat("Destroying comm %p", *comm_);
-      XLA_CUDA_WARN_IF_ERROR(ncclCommDestroy(*comm_));
-    }
+  // In the bf16 case, the type conversions and op might be fused.
+  if (mlir::isa<mlir::mhlo::FusionOp>(result_op)) {
+    return FindReductionOp(result_op->getRegion(0).front());
   }
 
-  ncclComm_t comm() { return *comm_; }
-
- private:
-  absl::optional<ncclComm_t> comm_;
-};
-
-ncclRedOp_t ReductionKindToNccl(ReductionKind kind) {
-  switch (kind) {
-    case ReductionKind::SUM:
-      return ncclSum;
-    case ReductionKind::PRODUCT:
-      return ncclProd;
-    case ReductionKind::MIN:
-      return ncclMin;
-    case ReductionKind::MAX:
-      return ncclMax;
-  }
-}
-
-PrimitiveType AllReducePrimitiveType(const HloInstruction* instr) {
-  return instr->operand(0)->shape().element_type();
-}
-
-absl::optional<ncclDataType_t> DatatypeToNccl(PrimitiveType element_type) {
-  switch (element_type) {
-    case S8:
-      return ncclInt8;
-    case U8:
-      return ncclUint8;
-    case S32:
-      return ncclInt32;
-    case U32:
-      return ncclUint32;
-    case S64:
-      return ncclInt64;
-    case U64:
-      return ncclUint64;
-    case F16:
-      return ncclFloat16;
-    case F32:
-      return ncclFloat32;
-    case F64:
-      return ncclFloat64;
-    default:
-      return absl::nullopt;
-  }
-}
-
-// Key for looking up a particular NCCL clique.  This is just a set of unique
-// device ordinals (i.e. GPU IDs).
-struct NcclCliqueKey {
-  explicit NcclCliqueKey(absl::Span<const int64> devices)
-      : devices(devices.begin(), devices.end()) {
-    absl::c_sort(this->devices);
-    CHECK(absl::c_adjacent_find(devices) == devices.end())
-        << "Duplicate devices are not allowed: "
-        << absl::StrJoin(devices, ", ");
+  // Standard case.
+  if (absl::c_is_permutation(result_op->getOperands(), block.getArguments())) {
+    return result_op;
   }
 
-  template <typename H>
-  friend H AbslHashValue(H h, const NcclCliqueKey& k) {
-    return H::combine(std::move(h), k.devices);
-  }
-  friend bool operator==(const NcclCliqueKey& a, const NcclCliqueKey& b) {
-    return a.devices == b.devices;
-  }
-
-  std::vector<int64> devices;
-};
-
-// Owns a clique of NCCL comms which can be used for collective operations among
-// a particular set of GPUs.
-//
-// You must ensure this is not in an error state (i.e. status() is OK) before
-// touching any other methods.
-//
-// (Usually allowing objects to be in a constructed-but-uninitialized state is
-// an antipattern.  We do it here because it allows us to have a
-// RefcountingHashMap which contains and automatically constructs NcclCliques.
-// This greatly simplifies the rest of this file.)
-//
-// Note that if you want to do a collective operation among a subset of these
-// GPUs, you'll need a different clique.
-class NcclClique {
- public:
-  explicit NcclClique(absl::Span<const int64> devices)
-      : devices_(devices.begin(), devices.end()) {
-    absl::c_sort(devices_);
-    status_ = Init();
-  }
-
-  Status status() { return status_; }
-
-  absl::Span<const int64> devices() {
-    TF_CHECK_OK(status_);
-    return devices_;
-  }
-  ncclComm_t comm(int64 device) {
-    int64 idx = std::distance(devices_.begin(), absl::c_find(devices_, device));
-    return comms_.at(idx).comm();
-  }
-
-  // These methods let you acquire exclusive access to a NCCL clique, ensuring
-  // no other NCCL operations are taking place on the clique's comms.
-  //
-  // We disable thread-safety analysis because in common use, only the primary
-  // thread in a Rendezvous acquires this lock, and that makes thread-safety
-  // analysis unhappy.  Tread carefully, you are playing with fire.
-  void Lock() NO_THREAD_SAFETY_ANALYSIS {
-    TF_CHECK_OK(status_);
-    mu_->lock();
-  }
-  void Unlock() NO_THREAD_SAFETY_ANALYSIS {
-    TF_CHECK_OK(status_);
-    mu_->unlock();
-  }
-
- private:
-  Status Init() {
-    VLOG(3) << absl::StreamFormat(
-        "Initializing nccl comms for participant devices {%s}",
-        absl::StrJoin(devices_, ", "));
-
-    // Restore CUDA device after running this.  XLA shouldn't care, but maybe
-    // another consumer does.
-    int initial_cuda_device;
-    XLA_CUDA_RETURN_IF_ERROR(cudaGetDevice(&initial_cuda_device));
-    auto cuda_device_restorer = MakeCleanup(
-        [&] { XLA_CUDA_WARN_IF_ERROR(cudaSetDevice(initial_cuda_device)); });
-
-    // When using ncclGroupStart/End it seems that the ncclComm_t's are not
-    // populated until the End() call.  This unfortunately makes error handling
-    // tricky.
-    std::vector<ncclComm_t> raw_comms(devices_.size(), nullptr);
-    ncclUniqueId nccl_id;
-    XLA_CUDA_RETURN_IF_ERROR(ncclGetUniqueId(&nccl_id));
-    XLA_CUDA_RETURN_IF_ERROR(ncclGroupStart());
-    Status status = [&] {
-      for (int i = 0; i < devices_.size(); ++i) {
-        XLA_CUDA_RETURN_IF_ERROR(cudaSetDevice(devices_[i]));
-        XLA_CUDA_RETURN_IF_ERROR(
-            ncclCommInitRank(&raw_comms[i], devices_.size(), nccl_id, i));
-      }
-      return Status::OK();
-    }();
-    // Always call ncclGroupEnd().
-    XLA_CUDA_RETURN_IF_ERROR(ncclGroupEnd());
-
-    // Populate comms_ from the raw comms we created above.  If we encountered
-    // an error above we'll later clear comms_ thus destroying any raw comms
-    // that were created before the error.
-    for (int i = 0; i < devices_.size(); ++i) {
-      VLOG(3) << absl::StreamFormat("Device %d assigned ncclComm %p",
-                                    devices_[i], raw_comms[i]);
-      CHECK(raw_comms[i] != nullptr || !status.ok());
-      comms_.emplace_back(raw_comms[i]);
-    }
-    if (!status.ok()) {
-      comms_.clear();
-    }
-
-    return status;
-  }
-
-  Status status_;
-  std::vector<int64> devices_;
-  std::vector<NcclComm> comms_;
-
-  // This mutex is in a unique_ptr so NcclClique can be movable.
-  std::unique_ptr<tensorflow::mutex> mu_ =
-      absl::make_unique<tensorflow::mutex>();
-};
-
-// Global cache of NCCL cliques.  An entry in this map is kept alive as long as
-// there's a reference to it somewhere.  A Thunk holds a reference to each
-// Clique it's ever used.
-//
-// A consequence of the fact that this is process-global is that we'll only ever
-// have one clique alive for a given set of GPUs.  This means that a process
-// will never do two collective operations concurrently on the same set of GPUs.
-RefcountingHashMap<NcclCliqueKey, NcclClique>& GlobalNcclCliqueMap() {
-  static auto& m = *new RefcountingHashMap<NcclCliqueKey, NcclClique>(
-      [](const NcclCliqueKey& key) {
-        return absl::make_unique<NcclClique>(key.devices);
-      });
-  return m;
-}
-
-class RendezvousNcclAllReduce : public Rendezvous<std::shared_ptr<NcclClique>> {
- public:
-  explicit RendezvousNcclAllReduce(const RendezvousKey& k)
-      : Rendezvous<std::shared_ptr<NcclClique>>(k) {}
-
- protected:
-  StatusOr<std::pair<std::shared_ptr<NcclClique>, bool>> SubmitParticipantImpl(
-      AllReduceParticipantData participant) override;
-
-  void CleanupImpl(std::shared_ptr<NcclClique> handle,
-                   bool is_primary) override;
-};
-
-// Global map of Rendezvous objects.  A thread participating in a collective op
-// looks up its Rendezvous in this map to find the other threads that it's
-// participating with.
-//
-// Rendezvous objects are one-time use, so they're removed from this map once
-// we're through with them.
-RefcountingHashMap<RendezvousKey, RendezvousNcclAllReduce>&
-GlobalRendezvousMap() {
-  static auto& m =
-      *new RefcountingHashMap<RendezvousKey, RendezvousNcclAllReduce>(
-          [](const RendezvousKey& k) {
-            return absl::make_unique<RendezvousNcclAllReduce>(k);
-          });
-  return m;
-}
-
-StatusOr<std::pair<std::shared_ptr<NcclClique>, bool>>
-RendezvousNcclAllReduce::SubmitParticipantImpl(
-    AllReduceParticipantData participant) {
-  // We pull into our thread a) the communication handle and b) whether we're
-  // the "primary" thread for this rendezvous -- the "primary" thread has some
-  // additional responsibilities for setup/teardown.
-  ncclComm_t comm;
-  bool primary;
-  std::shared_ptr<NcclClique> clique;
-
-  {
-    tensorflow::mutex_lock lock(mu_);
-
-    // The first thread to get here has additional responsibilities, such as
-    // ensuring that there's a NCCL clique available for us to use.
-    primary = !initialized_;
-
-    // Look up or create the NCCL clique for this set of devices.
-    std::vector<int64> devices;
-    for (const auto& p : participants_) {
-      devices.push_back(p.device_ordinal);
-    }
-    clique = GlobalNcclCliqueMap()[NcclCliqueKey(devices)];
-
-    if (primary) {
-      VLOG(3) << "Primary initializing accounting data.";
-      initialized_ = true;
-
-      // Acquire exclusive access to the NCCL clique itself so that two
-      // unrelated collective operations won't try to use the clique
-      // concurrently.
-      // We'll unlock it in CleanupImpl.
-      clique->Lock();
-    }
-
-    if (!clique->status().ok()) {
-      VLOG(1)
-          << "SubmitParticipant failing because clique failed to initialize: "
-          << clique->status().ToString();
-      return clique->status();
-    }
-
-    comm = clique->comm(participant.device_ordinal);
-
-    // Drop the lock at the end of scope so other participants may enter.
-  }
-
-  VLOG(3) << "Performing all reduce from device ordinal: "
-          << participant.device_ordinal;
-  ncclRedOp_t computation = ReductionKindToNccl(participant.reduction_kind);
-  absl::optional<ncclDataType_t> allreduce_datatype =
-      DatatypeToNccl(participant.primitive_type);
-  CHECK(allreduce_datatype.has_value());
-
-  se::StreamExecutor* executor = participant.stream->parent();
-  se::cuda::ScopedActivateExecutorContext scoped_context(executor);
-  cudaStream_t* cu_stream = reinterpret_cast<cudaStream_t*>(
-      participant.stream->implementation()->GpuStreamMemberHack());
-  VLOG(3) << "Using stream pointer: " << cu_stream
-          << " on device: " << participant.device_ordinal;
-  void* send_buffer = participant.source_data.opaque();
-  void* recv_buffer = participant.destination_data.opaque();
-  VLOG(3) << absl::StreamFormat(
-      "Calling ncclAllReduce(send_buffer=%p, recv_buffer=%p, count=%d, "
-      "comm=%p, stream=%p)",
-      send_buffer, recv_buffer, participant.element_count,
-      static_cast<const void*>(comm), cu_stream);
-  XLA_CUDA_RETURN_IF_ERROR(ncclAllReduce(send_buffer, recv_buffer,
-                                         /*count=*/participant.element_count,
-                                         /*datatype=*/*allreduce_datatype,
-                                         /*op=*/computation,
-                                         /*comm=*/comm,
-                                         /*stream=*/*cu_stream));
-
-  VLOG(3) << "Done performing all reduce for ordinal: "
-          << participant.device_ordinal;
-  VLOG(3) << "This thread done with all-reduce op.";
-
-  return std::make_pair(clique, primary);
-}
-
-void RendezvousNcclAllReduce::CleanupImpl(std::shared_ptr<NcclClique> handle,
-                                          bool is_primary) {
-  // Releases the lock on the clique (held only by the primary thread).
-  if (is_primary) {
-    handle->Unlock();
-  }
+  // bf16 case.
+  TF_RET_CHECK(mlir::isa<mlir::mhlo::ConvertOp>(result_op));
+  TF_RET_CHECK(result_op->getNumOperands() == 1);
+  mlir::Operation* reduction_op = result_op->getOperand(0).getDefiningOp();
+  TF_RET_CHECK(reduction_op);
+  TF_RET_CHECK(reduction_op->getNumOperands() == 2);
+  mlir::Value operand0 = reduction_op->getOperand(0);
+  mlir::Value operand1 = reduction_op->getOperand(1);
+  auto operand0_op = operand0.getDefiningOp<mlir::mhlo::ConvertOp>();
+  auto operand1_op = operand1.getDefiningOp<mlir::mhlo::ConvertOp>();
+  TF_RET_CHECK(operand0_op);
+  TF_RET_CHECK(operand1_op);
+  TF_RET_CHECK(operand0_op->getNumOperands() == 1);
+  TF_RET_CHECK(operand1_op->getNumOperands() == 1);
+  std::array<mlir::Value, 2> operands{operand0_op->getOperand(0),
+                                      operand1_op->getOperand(0)};
+  TF_RET_CHECK(absl::c_is_permutation(operands, block.getArguments()));
+  return reduction_op;
 }
 
 }  // namespace
 
-// Extra data stored in NcclAllReduceThunk that we didn't want to expose in the
-// header.  In particular, this stores the thunk's cache of all NcclCliques it's
-// ever used.  This causes those cliques to stay alive as long as the thunk
-// lives, which is how we avoid expensive reinitialization of NCCL cliques.
-struct NcclAllReduceThunk::AuxData {
-  tensorflow::mutex mu;
-  absl::flat_hash_set<std::shared_ptr<NcclClique>> cliques GUARDED_BY(mu);
-};
+namespace impl {
 
-/*static*/ bool NcclAllReduceThunk::CanImplement(const HloInstruction* crs) {
-  return MatchReductionComputation(crs->to_apply()).has_value() &&
-         DatatypeToNccl(AllReducePrimitiveType(crs)).has_value() &&
-         crs->IsCrossReplicaAllReduce() &&
-         crs->operand_count() == 1;  // One array to reduce.
+template <typename OpT>
+bool CanImplement(OpT op) {
+  return absl::c_all_of(op.getInputs(), IsValidOperand) &&
+         NcclAllReduceThunkBase::MatchAllReduceComputation(op.getComputation())
+             .has_value();
 }
 
-/*static*/ absl::flat_hash_set<int>
-NcclAllReduceThunk::DevicesWithOpenNcclChannels() {
-  absl::flat_hash_set<int> devices;
-  GlobalNcclCliqueMap().ForEach(
-      [&](const NcclCliqueKey& k, const std::shared_ptr<NcclClique>&) {
-        devices.insert(k.devices.begin(), k.devices.end());
-      });
-  return devices;
+template <typename OpT>
+NcclAllReduceConfig GetNcclAllReduceConfig(OpT op) {
+  std::optional<ReductionKind> reduction_kind =
+      NcclAllReduceThunkBase::MatchAllReduceComputation(op.getComputation());
+  CHECK(reduction_kind.has_value());
+
+  NcclAllReduceConfig config;
+  config.config =
+      GetNcclCollectiveConfigForMlir(op, op.getUseGlobalDeviceIds());
+  config.reduction_kind = *reduction_kind;
+  return config;
 }
 
-NcclAllReduceThunk::NcclAllReduceThunk(
-    int64 replica_count, int64 element_count,
-    const BufferAllocation::Slice& source_buffer,
-    const BufferAllocation::Slice& destination_buffer,
-    const HloInstruction* all_reduce)
-    : Thunk(Thunk::kNcclAllReduce, all_reduce),
-      replica_count_(replica_count),
-      element_count_(element_count),
-      source_buffer_(source_buffer),
-      destination_buffer_(destination_buffer),
-      aux_data_(absl::make_unique<AuxData>()) {}
+template <typename OpT>
+bool IsDegenerate(OpT op, int64_t replica_count, int64_t partition_count) {
+  return GetNcclCollectiveConfigForMlir(op, op.getUseGlobalDeviceIds())
+      .IsDegenerate(replica_count, partition_count);
+}
 
-// Figures out which devices (named by their replica-ids) are participating in
-// the all-reduce subgroup that contains device_ordinal.
-Status NcclAllReduceThunk::ExecuteOnStream(const ExecuteParams& params) {
-  VLOG(1) << "Starting NcclAllReduceThunk.";
-  auto op_profiler =
-      params.profiler->MakeScopedInstructionProfiler(hlo_instruction());
+template <typename OpT>
+CollectiveOpGroupMode GetGroupMode(OpT op) {
+  return GetNcclAllReduceConfig(op).config.group_mode;
+}
 
-  auto* instr = Cast<HloAllReduceInstruction>(hlo_instruction());
-  int64 device_ordinal = params.stream->parent()->device_ordinal();
+}  // namespace impl
+
+std::optional<ReductionKind> NcclAllReduceThunkBase::MatchAllReduceComputation(
+    mlir::Region& computation) {
+  mlir::Block& block = computation.front();
+  StatusOr<mlir::Operation*> reduction_op = FindReductionOp(block);
+  if (!reduction_op.ok()) return std::nullopt;
+  StatusOr<HloOpcode> opcode = MhloToHloOpcode(*reduction_op);
+  if (!opcode.ok()) return std::nullopt;
+  // Match the operation to a reduction kind. We can represent and/or of pred as
+  // min/max. This works because pred is stored as an 8-bit int of value 0 or 1.
+  PrimitiveType type =
+      TypeToShape(block.getArgument(0).getType()).element_type();
+  if (type == PRED) {
+    switch (opcode.value()) {
+      case HloOpcode::kAnd:
+        return ReductionKind::MIN;
+      case HloOpcode::kOr:
+        return ReductionKind::MAX;
+      default:
+        return std::nullopt;
+    }
+  } else if (primitive_util::IsComplexType(type)) {
+    // Only addition is supported for complex types.
+    if (*opcode == HloOpcode::kAdd) {
+      return ReductionKind::SUM;
+    } else {
+      return std::nullopt;
+    }
+  } else {
+    switch (*opcode) {
+      case HloOpcode::kAdd:
+        return ReductionKind::SUM;
+      case HloOpcode::kMultiply:
+        return ReductionKind::PRODUCT;
+      case HloOpcode::kMaximum:
+        return ReductionKind::MAX;
+      case HloOpcode::kMinimum:
+        return ReductionKind::MIN;
+      default:
+        return std::nullopt;
+    }
+  }
+}
+
+NcclAllReduceThunkBase::NcclAllReduceThunkBase(Thunk::Kind kind,
+                                               ThunkInfo thunk_info,
+                                               NcclAllReduceConfig config,
+                                               std::vector<Buffer> buffers)
+    : NcclCollectiveThunk(kind, thunk_info),
+      config_(std::move(config)),
+      buffers_(std::move(buffers)) {
+  CHECK_EQ(config_.config.operand_count, buffers_.size());
+}
+
+NcclAllReduceThunk::NcclAllReduceThunk(ThunkInfo thunk_info,
+                                       mlir::lmhlo::AllReduceOp op,
+                                       std::vector<Buffer> buffers)
+    : NcclAllReduceThunkBase(Thunk::kNcclAllReduce, thunk_info,
+                             impl::GetNcclAllReduceConfig(op), buffers) {}
+
+bool NcclAllReduceThunk::CanImplement(mlir::lmhlo::AllReduceOp op) {
+  return impl::CanImplement(op);
+}
+
+bool NcclAllReduceThunk::IsDegenerate(mlir::lmhlo::AllReduceOp op,
+                                      int64_t replica_count,
+                                      int64_t partition_count) {
+  return impl::IsDegenerate(op, replica_count, partition_count);
+}
+
+CollectiveOpGroupMode NcclAllReduceThunk::GetGroupMode(
+    mlir::lmhlo::AllReduceOp op) {
+  return impl::GetGroupMode(op);
+}
+
+Status NcclAllReduceThunk::RunNcclCollective(const ExecuteParams& params,
+                                             ncclComm_t comm) {
+  se::Stream& stream = *params.stream;
+  TF_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferPair> device_buffers,
+      ConvertToDeviceBuffers(params, buffers_,
+                             config_.config.operand_element_type));
+  TF_RETURN_IF_ERROR(
+      RunAllReduce(config_.reduction_kind, device_buffers, stream, comm));
+
+  int device_ordinal = stream.parent()->device_ordinal();
+  VLOG(3) << "Done performing all-reduce for ordinal: " << device_ordinal;
+  return OkStatus();
+}
+
+NcclAllReduceStartThunk::NcclAllReduceStartThunk(
+    ThunkInfo thunk_info, mlir::lmhlo_gpu::AllReduceStartOp op,
+    std::vector<Buffer> buffers)
+    : NcclAllReduceThunkBase(Thunk::kNcclAllReduceStart, thunk_info,
+                             impl::GetNcclAllReduceConfig(op), buffers) {}
+
+bool NcclAllReduceStartThunk::CanImplement(
+    mlir::lmhlo_gpu::AllReduceStartOp op) {
+  return impl::CanImplement(op);
+}
+
+bool NcclAllReduceStartThunk::IsDegenerate(mlir::lmhlo_gpu::AllReduceStartOp op,
+                                           int64_t replica_count,
+                                           int64_t partition_count) {
+  return impl::IsDegenerate(op, replica_count, partition_count);
+}
+
+CollectiveOpGroupMode NcclAllReduceStartThunk::GetGroupMode(
+    mlir::lmhlo_gpu::AllReduceStartOp op) {
+  return impl::GetGroupMode(op);
+}
+
+Status NcclAllReduceStartThunk::RunNcclCollective(const ExecuteParams& params,
+                                                  ncclComm_t comm) {
+  se::Stream& async_comms_stream = *params.async_comms_stream;
+  // Wait until compute inputs are ready.
+  async_comms_stream.ThenWaitFor(params.stream);
 
   TF_ASSIGN_OR_RETURN(
-      std::vector<int64> participating_replicas,
-      GetParticipatingReplicas(device_ordinal, instr->replica_groups(),
-                               replica_count_, *params.device_assn));
+      std::vector<DeviceBufferPair> device_buffers,
+      ConvertToDeviceBuffers(params, buffers_,
+                             config_.config.operand_element_type));
+  TF_RETURN_IF_ERROR(RunAllReduce(config_.reduction_kind, device_buffers,
+                                  async_comms_stream, comm));
 
-  // Find or create the rendezvous for this collective operation.
-  RendezvousKey rendezvous_key = RendezvousKey::FromInstruction(
-      params.run_id, participating_replicas, hlo_instruction());
-  std::shared_ptr<RendezvousNcclAllReduce> rendezvous =
-      GlobalRendezvousMap()[rendezvous_key];
+  // Create an event on the async stream for the completion of the all-reduce.
+  se::Event done_event(async_comms_stream.parent());
+  TF_RET_CHECK(done_event.Init());
+  async_comms_stream.ThenRecordEvent(&done_event);
 
-  VLOG(2) << "Rendezvous key: " << rendezvous_key.ToString()
-          << ", rendezvous: " << rendezvous.get()
-          << ", participating replicas: "
-          << absl::StrJoin(participating_replicas, ", ");
+  int device_ordinal = async_comms_stream.parent()->device_ordinal();
 
-  AllReduceParticipantData participant(rendezvous_key);
-  participant.element_count = element_count_;
-  participant.device_ordinal = device_ordinal;
-  participant.source_data =
-      params.buffer_allocations->GetDeviceAddress(source_buffer_);
-  participant.destination_data =
-      params.buffer_allocations->GetDeviceAddress(destination_buffer_);
-  participant.stream = params.stream;
-  auto reduction_kind =
-      MatchReductionComputation(hlo_instruction()->to_apply());
-  CHECK(reduction_kind.has_value());
-  participant.reduction_kind = *reduction_kind;
-  participant.primitive_type = AllReducePrimitiveType(hlo_instruction());
-
-  // Do the operation.
-  StatusOr<std::pair<std::shared_ptr<NcclClique>,
-                     std::shared_ptr<tensorflow::BlockingCounter>>>
-      result = rendezvous->SubmitParticipant(participant);
-  if (!result.ok()) {
-    VLOG(1) << "NcclAllReduceThunk::ExecuteOnStream failed: "
-            << result.status().ToString();
-    return result.status();
-  }
-
-  std::shared_ptr<NcclClique> clique;
-  std::shared_ptr<tensorflow::BlockingCounter> blocking_counter;
-  std::tie(clique, blocking_counter) = std::move(result).ValueOrDie();
-
-  // Keep the clique we used alive for as long as this Thunk lives.  Creating
-  // new NCCL cliques is expensive, and this is how we avoid thrashing them.
   {
-    tensorflow::mutex_lock lock(aux_data_->mu);
-    aux_data_->cliques.insert(std::move(clique));
+    absl::MutexLock lock(&mu_);
+    auto result = done_events_.emplace(device_ordinal, std::move(done_event));
+    TF_RET_CHECK(result.second) << "done event has not been consumed";
   }
 
-  // Drop our reference to the Rendezvous and wait for all other threads to do
-  // the same.  If we didn't do this, one of the threads could run past this
-  // point, reenter ExecuteOnStream for another all-reduce, and attempt to reuse
-  // the Rendezvous!
-  //
-  // An alternative way of accomplishing this goal would be to implement
-  // RefcountingHashMap::erase() and call it during SubmitParticipant.  But
-  // erase() is deceptively complex to implement correctly.
-  rendezvous.reset();
-  blocking_counter->DecrementCount();
-  WaitAndLogIfStuck(blocking_counter.get(), [&] {
-    return absl::StrFormat(
-        "participant for device ordinal %d, stream %p waiting for "
-        "all threads to drop their reference to the rendezvous: %s",
-        device_ordinal, params.stream, rendezvous_key.ToString());
-  });
-
-  return Status::OK();
+  VLOG(3) << "Done performing all-reduce-start for ordinal: " << device_ordinal;
+  return OkStatus();
 }
 
-NcclAllReduceThunk::~NcclAllReduceThunk() {}
+StatusOr<se::Event> NcclAllReduceStartThunk::TakeDoneEvent(int device_ordinal) {
+  absl::MutexLock lock(&mu_);
+  auto it = done_events_.find(device_ordinal);
+  TF_RET_CHECK(it != done_events_.end()) << "done event not found";
+  // Take ownership of the event.
+  se::Event done_event = std::move(it->second);
+  done_events_.erase(it);
+  return done_event;
+}
+
+NcclAllReduceDoneThunk::NcclAllReduceDoneThunk(
+    ThunkInfo thunk_info, NcclAllReduceStartThunk& start_thunk)
+    : Thunk(Thunk::kNcclAllReduceDone, thunk_info), start_thunk_(start_thunk) {}
+
+Status NcclAllReduceDoneThunk::ExecuteOnStream(const ExecuteParams& params) {
+  int device_ordinal = params.stream->parent()->device_ordinal();
+  TF_ASSIGN_OR_RETURN(se::Event done_event,
+                      start_thunk_.TakeDoneEvent(device_ordinal));
+  params.stream->ThenWaitFor(&done_event);
+  return OkStatus();
+}
+
+NcclReduceScatterThunk::NcclReduceScatterThunk(
+    ThunkInfo thunk_info, mlir::lmhlo::ReduceScatterOp op,
+    std::vector<NcclAllReduceThunk::Buffer> buffers)
+    : NcclAllReduceThunkBase(Thunk::kNcclReduceScatter, thunk_info,
+                             impl::GetNcclAllReduceConfig(op),
+                             std::move(buffers)) {}
+
+/*static*/ bool NcclReduceScatterThunk::CanImplement(
+    mlir::lmhlo::ReduceScatterOp op) {
+  return impl::CanImplement(op);
+}
+
+/*static*/ bool NcclReduceScatterThunk::IsDegenerate(
+    mlir::lmhlo::ReduceScatterOp op, int64_t replica_count,
+    int64_t partition_count) {
+  return impl::IsDegenerate(op, replica_count, partition_count);
+}
+
+/*static*/ CollectiveOpGroupMode NcclReduceScatterThunk::GetGroupMode(
+    mlir::lmhlo::ReduceScatterOp op) {
+  return impl::GetGroupMode(op);
+}
+
+Status NcclReduceScatterThunk::RunNcclCollective(const ExecuteParams& params,
+                                                 ncclComm_t comm) {
+  TF_ASSIGN_OR_RETURN(
+      std::vector<DeviceBufferPair> device_buffers,
+      ConvertToDeviceBuffers(params, buffers_,
+                             config_.config.operand_element_type));
+  return RunReduceScatter(config_.reduction_kind, device_buffers,
+                          *params.stream, comm);
+}
+
+Status RunReduceScatter(ReductionKind reduction_kind,
+                        std::vector<DeviceBufferPair>& buffers,
+                        se::Stream& stream, ncclComm_t comm) {
+#if XLA_ENABLE_XCCL
+  int device_ordinal = stream.parent()->device_ordinal();
+  VLOG(3) << "Performing reduce-scatter from device ordinal: "
+          << device_ordinal;
+
+  ncclRedOp_t reduce_op = ToNcclReduction(reduction_kind);
+
+  se::gpu::GpuStreamHandle gpu_stream = se::gpu::AsGpuStreamValue(&stream);
+
+  int num_participants = 0;
+  XLA_CUDA_RETURN_IF_ERROR(ncclCommCount(comm, &num_participants));
+
+  XLA_CUDA_RETURN_IF_ERROR(ncclGroupStart());
+  for (size_t i = 0; i < buffers.size(); ++i) {
+    DeviceBufferPair& buffer = buffers[i];
+    const void* send_buffer = buffer.source_buffer.opaque();
+    void* recv_buffer = buffer.destination_buffer.opaque();
+
+    TF_ASSIGN_OR_RETURN(auto dtype_and_multiplier,
+                        ToNcclDataTypeAndCountMultiplier(buffer.element_type));
+    ncclDataType_t dtype = dtype_and_multiplier.first;
+    int element_count = buffer.element_count * dtype_and_multiplier.second;
+
+    // buffer.element_count is the source buffers element count. For
+    // ncclReduceScatter, we need the destination buffers element count.
+    TF_RET_CHECK(element_count % num_participants == 0)
+        << "Source buffer was not an exact multiple of the number of "
+           "participants.";
+
+    int64_t recv_count = element_count / num_participants;
+    VLOG(3) << absl::StreamFormat(
+        "Calling ncclReduceScatter(send_buffer=%p, recv_buffer=%p, "
+        "recvcount=%d, "
+        "comm=%p, stream=%p)",
+        send_buffer, recv_buffer, recv_count, static_cast<const void*>(comm),
+        gpu_stream);
+    XLA_CUDA_RETURN_IF_ERROR(ncclReduceScatter(send_buffer, recv_buffer,
+                                               recv_count, dtype, reduce_op,
+                                               comm, gpu_stream));
+  }
+  XLA_CUDA_RETURN_IF_ERROR(ncclGroupEnd());
+
+  VLOG(3) << "Done performing reduce-scatter for ordinal: " << device_ordinal;
+  return OkStatus();
+#else   // XLA_ENABLE_XCCL
+  return Unimplemented(
+      "NCCL support is not available: this binary was not built with a CUDA "
+      "compiler, which is necessary to build the NCCL source library.");
+#endif  // XLA_ENABLE_XCCL
+}
 
 }  // namespace gpu
 }  // namespace xla

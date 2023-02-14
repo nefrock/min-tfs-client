@@ -35,22 +35,25 @@ namespace xla {
 //
 // Applying this pass until a fixed point performs a variant of pairwise
 // summation (https://en.wikipedia.org/wiki/Pairwise_summation), which is
-// guaranteed to have an assymptotically smaller error bound provided that
+// guaranteed to have an asymptotically smaller error bound provided that
 // intermediate roundoff errors are random and have random sign.
 //
 // If this pass lowers the performance too much, the window size can always be
 // increased to a larger value.
 class TreeReductionRewriter : public HloModulePass {
  public:
-  explicit TreeReductionRewriter(int64 reduce_window_size = 32)
+  explicit TreeReductionRewriter(int64_t reduce_window_size = 32)
       : reduce_window_size_(reduce_window_size) {}
   ~TreeReductionRewriter() override = default;
   absl::string_view name() const override { return "tree_reduction_rewriter"; }
 
-  StatusOr<bool> Run(HloModule* module) override;
+  using HloPassInterface::Run;
+  StatusOr<bool> Run(
+      HloModule* module,
+      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
 
  private:
-  int64 reduce_window_size_;
+  int64_t reduce_window_size_;
 };
 
 }  // end namespace xla

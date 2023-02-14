@@ -12,10 +12,14 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
-
 #ifndef TENSORFLOW_CORE_KERNELS_DATA_DATASET_OPS_H_
 #define TENSORFLOW_CORE_KERNELS_DATA_DATASET_OPS_H_
 
+#include "tensorflow/core/platform/platform.h"
+
+// On mobile we do not provide this functionality because not all of its
+// dependencies are available there.
+#if !defined(IS_MOBILE_PLATFORM)
 #include "tensorflow/core/framework/dataset.h"
 #include "tensorflow/core/framework/op_kernel.h"
 
@@ -37,8 +41,7 @@ class DatasetToGraphOp : public OpKernel {
 
  private:
   const int op_version_;
-  SerializationContext::ExternalStatePolicy external_state_policy_ =
-      SerializationContext::ExternalStatePolicy::kWarn;
+  ExternalStatePolicy external_state_policy_ = ExternalStatePolicy::POLICY_WARN;
   bool strip_device_assignment_ = false;
 };
 
@@ -61,5 +64,6 @@ class DatasetFromGraphOp : public OpKernel {
 
 }  // namespace data
 }  // namespace tensorflow
+#endif  // !IS_MOBILE_PLATFORM
 
 #endif  // TENSORFLOW_CORE_KERNELS_DATA_DATASET_OPS_H_

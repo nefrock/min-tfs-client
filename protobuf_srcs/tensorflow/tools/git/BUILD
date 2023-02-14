@@ -3,15 +3,18 @@
 # Also contains information about git repository deposited by configure
 # in gen/...
 
+load("//tensorflow:tensorflow.bzl", "if_oss")
+
 package(
     default_visibility = ["//tensorflow:internal"],
-    licenses = ["notice"],  # Apache 2.0
+    licenses = ["notice"],
 )
 
 py_binary(
     name = "gen_git_source",
     srcs = ["gen_git_source.py"],
+    exec_compatible_with = if_oss(["@local_execution_config_platform//:platform_constraint"]),
     python_version = "PY3",
-    srcs_version = "PY2AND3",
-    deps = ["@six_archive//:six"],
+    srcs_version = "PY3",
+    tags = if_oss(["no-remote-exec"]),
 )

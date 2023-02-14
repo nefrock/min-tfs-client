@@ -26,7 +26,7 @@ namespace tensorflow {
 // The ReffedStatusCallback is a refcounted object that accepts a
 // StatusCallback.  When it is destroyed (its refcount goes to 0), the
 // StatusCallback is called with the first non-OK status passed to
-// UpdateStatus(), or Status::OK() if no non-OK status was set.
+// UpdateStatus(), or OkStatus() if no non-OK status was set.
 class ReffedStatusCallback : public core::RefCounted {
  public:
   explicit ReffedStatusCallback(StatusCallback done) : done_(std::move(done)) {}
@@ -52,7 +52,7 @@ class ReffedStatusCallback : public core::RefCounted {
  private:
   StatusCallback done_;
   mutex mu_;
-  StatusGroup status_group_ GUARDED_BY(mu_);
+  StatusGroup status_group_ TF_GUARDED_BY(mu_);
 };
 
 }  // namespace tensorflow

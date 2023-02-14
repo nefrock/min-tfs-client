@@ -20,14 +20,17 @@ limitations under the License.
 
 namespace tensorflow {
 
-// Register the bfloat16 numpy type.
-void RegisterNumpyBfloat16();
+// Register the bfloat16 numpy type. Returns true on success.
+bool RegisterNumpyBfloat16();
 
-// Returns the PyObject for the bfloat16 type.
-PyObject* Bfloat16PyType();
+// Returns a pointer to the bfloat16 dtype object.
+PyObject* Bfloat16Dtype();
 
 // Returns the id number of the bfloat16 numpy type.
 int Bfloat16NumpyType();
+
+// Returns a pointer to the float8_e4m3b11 dtype object.
+PyObject* Float8_E4M3B11Dtype();
 
 }  // namespace tensorflow
 

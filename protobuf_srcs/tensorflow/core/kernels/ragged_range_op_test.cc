@@ -12,14 +12,17 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
+
+#include <gtest/gtest.h>
 #include "tensorflow/core/framework/fake_input.h"
 #include "tensorflow/core/framework/node_def_builder.h"
 #include "tensorflow/core/framework/shape_inference.h"
 #include "tensorflow/core/framework/shape_inference_testutil.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/kernels/ops_testutil.h"
 #include "tensorflow/core/framework/tensor_testutil.h"
+#include "tensorflow/core/kernels/ops_testutil.h"
+#include "tensorflow/core/lib/core/status_test_util.h"
 #include "tensorflow/core/platform/test.h"
 
 namespace tensorflow {
@@ -53,8 +56,8 @@ TEST_F(RaggedRangeOpTest, IntValues) {
   TF_ASSERT_OK(RunOpKernel());
 
   // Expected: [[0, 2, 4, 6], [5, 6], [], [5, 4, 3, 2]]
-  test::ExpectTensorEqual<int64>(*GetOutput(kSplitsOutput),
-                                 test::AsTensor<int64>({0, 4, 6, 6, 10}));
+  test::ExpectTensorEqual<int64_t>(*GetOutput(kSplitsOutput),
+                                   test::AsTensor<int64_t>({0, 4, 6, 6, 10}));
   test::ExpectTensorEqual<int>(
       *GetOutput(kValuesOutput),
       test::AsTensor<int>({0, 2, 4, 6, 5, 6, 5, 4, 3, 2}));
@@ -68,11 +71,22 @@ TEST_F(RaggedRangeOpTest, FloatValues) {
   TF_ASSERT_OK(RunOpKernel());
 
   // Expected: [[0, 2, 4, 6], [5, 6], [], [5, 4, 3, 2]]
-  test::ExpectTensorEqual<int64>(*GetOutput(kSplitsOutput),
-                                 test::AsTensor<int64>({0, 4, 6, 6, 10}));
+  test::ExpectTensorEqual<int64_t>(*GetOutput(kSplitsOutput),
+                                   test::AsTensor<int64_t>({0, 4, 6, 6, 10}));
   test::ExpectTensorNear<float>(
       *GetOutput(kValuesOutput),
       test::AsTensor<float>({0, 2, 4, 6, 5, 6, 5, 4, 3, 2}), 0.1);
+}
+
+TEST_F(RaggedRangeOpTest, RangeSizeOverflow) {
+  BuildRaggedRangeGraph<float>();
+  AddInputFromArray<float>(TensorShape({2}), {1.1, 0.1});    // starts
+  AddInputFromArray<float>(TensorShape({2}), {10.0, 1e10});  // limits
+  AddInputFromArray<float>(TensorShape({2}), {1, 1e-10});    // deltas
+
+  EXPECT_EQ(absl::StrCat("Requires ((limit - start) / delta) <= ",
+                         std::numeric_limits<int64_t>::max()),
+            RunOpKernel().error_message());
 }
 
 TEST_F(RaggedRangeOpTest, BroadcastDeltas) {
@@ -83,8 +97,8 @@ TEST_F(RaggedRangeOpTest, BroadcastDeltas) {
   TF_ASSERT_OK(RunOpKernel());
 
   // Expected: [[0, 1, 2, 3, 4, 5, 6, 7], [5, 6], []]
-  test::ExpectTensorEqual<int64>(*GetOutput(kSplitsOutput),
-                                 test::AsTensor<int64>({0, 8, 10, 10}));
+  test::ExpectTensorEqual<int64_t>(*GetOutput(kSplitsOutput),
+                                   test::AsTensor<int64_t>({0, 8, 10, 10}));
   test::ExpectTensorEqual<int>(
       *GetOutput(kValuesOutput),
       test::AsTensor<int>({0, 1, 2, 3, 4, 5, 6, 7, 5, 6}));
@@ -98,8 +112,8 @@ TEST_F(RaggedRangeOpTest, BroadcastLimitsAndDeltas) {
   TF_ASSERT_OK(RunOpKernel());
 
   // Expected: [[0, 1, 2], [], [0, 1]]
-  test::ExpectTensorEqual<int64>(*GetOutput(kSplitsOutput),
-                                 test::AsTensor<int64>({0, 3, 3, 5}));
+  test::ExpectTensorEqual<int64_t>(*GetOutput(kSplitsOutput),
+                                   test::AsTensor<int64_t>({0, 3, 3, 5}));
   test::ExpectTensorEqual<int>(*GetOutput(kValuesOutput),
                                test::AsTensor<int>({0, 1, 2, 0, 1}));
 }
@@ -112,8 +126,8 @@ TEST_F(RaggedRangeOpTest, BroadcastStartsAndLimits) {
   TF_ASSERT_OK(RunOpKernel());
 
   // Expected: [[0, 3, 6, 9], [0, 4, 8], [0, 5, 10]]]
-  test::ExpectTensorEqual<int64>(*GetOutput(kSplitsOutput),
-                                 test::AsTensor<int64>({0, 4, 7, 10}));
+  test::ExpectTensorEqual<int64_t>(*GetOutput(kSplitsOutput),
+                                   test::AsTensor<int64_t>({0, 4, 7, 10}));
   test::ExpectTensorEqual<int>(
       *GetOutput(kValuesOutput),
       test::AsTensor<int>({0, 3, 6, 9, 0, 4, 8, 0, 5, 10}));
@@ -127,8 +141,8 @@ TEST_F(RaggedRangeOpTest, AllScalarInputs) {
   TF_ASSERT_OK(RunOpKernel());
 
   // Expected: [[0, 1, 2, 3, 4]
-  test::ExpectTensorEqual<int64>(*GetOutput(kSplitsOutput),
-                                 test::AsTensor<int64>({0, 5}));
+  test::ExpectTensorEqual<int64_t>(*GetOutput(kSplitsOutput),
+                                   test::AsTensor<int64_t>({0, 5}));
   test::ExpectTensorEqual<int>(*GetOutput(kValuesOutput),
                                test::AsTensor<int>({0, 1, 2, 3, 4}));
 }
@@ -182,8 +196,8 @@ TEST_F(RaggedRangeOpTest, EmptyRangePositiveDelta) {
   TF_ASSERT_OK(RunOpKernel());
 
   // Expected: [[0, 2, 4], []]
-  test::ExpectTensorEqual<int64>(*GetOutput(kSplitsOutput),
-                                 test::AsTensor<int64>({0, 3, 3}));
+  test::ExpectTensorEqual<int64_t>(*GetOutput(kSplitsOutput),
+                                   test::AsTensor<int64_t>({0, 3, 3}));
   test::ExpectTensorEqual<int>(*GetOutput(kValuesOutput),
                                test::AsTensor<int>({0, 2, 4}));
 }
@@ -196,8 +210,8 @@ TEST_F(RaggedRangeOpTest, EmptyRangeNegativeDelta) {
   TF_ASSERT_OK(RunOpKernel());
 
   // Expected: [[], [5, 3, 1]]
-  test::ExpectTensorEqual<int64>(*GetOutput(kSplitsOutput),
-                                 test::AsTensor<int64>({0, 0, 3}));
+  test::ExpectTensorEqual<int64_t>(*GetOutput(kSplitsOutput),
+                                   test::AsTensor<int64_t>({0, 0, 3}));
   test::ExpectTensorEqual<int>(*GetOutput(kValuesOutput),
                                test::AsTensor<int>({5, 3, 1}));
 }

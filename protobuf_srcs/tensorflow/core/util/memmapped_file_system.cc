@@ -72,7 +72,7 @@ class RandomAccessFileFromMemmapped : public RandomAccessFile {
     *result =
         StringPiece(reinterpret_cast<const char*>(data_) + offset, region_left);
     return (region_left == to_read)
-               ? Status::OK()
+               ? OkStatus()
                : Status(error::OUT_OF_RANGE, "Read less bytes than requested");
   }
 
@@ -86,19 +86,21 @@ class RandomAccessFileFromMemmapped : public RandomAccessFile {
 
 MemmappedFileSystem::MemmappedFileSystem() {}
 
-Status MemmappedFileSystem::FileExists(const string& fname) {
+Status MemmappedFileSystem::FileExists(const string& fname,
+                                       TransactionToken* token) {
   if (!mapped_memory_) {
     return errors::FailedPrecondition("MemmappedEnv is not initialized");
   }
   const auto dir_element = directory_.find(fname);
   if (dir_element != directory_.end()) {
-    return Status::OK();
+    return OkStatus();
   }
   return errors::NotFound(fname, " not found");
 }
 
 Status MemmappedFileSystem::NewRandomAccessFile(
-    const string& filename, std::unique_ptr<RandomAccessFile>* result) {
+    const string& filename, TransactionToken* token,
+    std::unique_ptr<RandomAccessFile>* result) {
   if (!mapped_memory_) {
     return errors::FailedPrecondition("MemmappedEnv is not initialized");
   }
@@ -109,11 +111,12 @@ Status MemmappedFileSystem::NewRandomAccessFile(
   result->reset(new RandomAccessFileFromMemmapped(
       GetMemoryWithOffset(dir_element->second.offset),
       dir_element->second.length));
-  return Status::OK();
+  return OkStatus();
 }
 
 Status MemmappedFileSystem::NewReadOnlyMemoryRegionFromFile(
-    const string& filename, std::unique_ptr<ReadOnlyMemoryRegion>* result) {
+    const string& filename, TransactionToken* token,
+    std::unique_ptr<ReadOnlyMemoryRegion>* result) {
   if (!mapped_memory_) {
     return errors::FailedPrecondition("MemmappedEnv is not initialized");
   }
@@ -124,10 +127,11 @@ Status MemmappedFileSystem::NewReadOnlyMemoryRegionFromFile(
   result->reset(new ReadOnlyMemoryRegionFromMemmapped(
       GetMemoryWithOffset(dir_element->second.offset),
       dir_element->second.length));
-  return Status::OK();
+  return OkStatus();
 }
 
-Status MemmappedFileSystem::GetFileSize(const string& filename, uint64* size) {
+Status MemmappedFileSystem::GetFileSize(const string& filename,
+                                        TransactionToken* token, uint64* size) {
   if (!mapped_memory_) {
     return errors::FailedPrecondition("MemmappedEnv is not initialized");
   }
@@ -136,12 +140,13 @@ Status MemmappedFileSystem::GetFileSize(const string& filename, uint64* size) {
     return errors::NotFound("Region ", filename, " is not found");
   }
   *size = dir_element->second.length;
-  return Status::OK();
+  return OkStatus();
 }
 
-Status MemmappedFileSystem::Stat(const string& fname, FileStatistics* stat) {
+Status MemmappedFileSystem::Stat(const string& fname, TransactionToken* token,
+                                 FileStatistics* stat) {
   uint64 size;
-  auto status = GetFileSize(fname, &size);
+  auto status = GetFileSize(fname, token, &size);
   if (status.ok()) {
     stat->length = size;
   }
@@ -149,40 +154,48 @@ Status MemmappedFileSystem::Stat(const string& fname, FileStatistics* stat) {
 }
 
 Status MemmappedFileSystem::NewWritableFile(const string& filename,
+                                            TransactionToken* token,
                                             std::unique_ptr<WritableFile>* wf) {
   return errors::Unimplemented("memmapped format doesn't support writing");
 }
 
 Status MemmappedFileSystem::NewAppendableFile(
-    const string& filename, std::unique_ptr<WritableFile>* result) {
+    const string& filename, TransactionToken* token,
+    std::unique_ptr<WritableFile>* result) {
   return errors::Unimplemented("memmapped format doesn't support writing");
 }
 
 Status MemmappedFileSystem::GetChildren(const string& filename,
+                                        TransactionToken* token,
                                         std::vector<string>* strings) {
   return errors::Unimplemented("memmapped format doesn't support GetChildren");
 }
 
 Status MemmappedFileSystem::GetMatchingPaths(const string& pattern,
+                                             TransactionToken* token,
                                              std::vector<string>* results) {
   return errors::Unimplemented(
       "memmapped format doesn't support GetMatchingPaths");
 }
 
-Status MemmappedFileSystem::DeleteFile(const string& filename) {
+Status MemmappedFileSystem::DeleteFile(const string& filename,
+                                       TransactionToken* token) {
   return errors::Unimplemented("memmapped format doesn't support DeleteFile");
 }
 
-Status MemmappedFileSystem::CreateDir(const string& dirname) {
+Status MemmappedFileSystem::CreateDir(const string& dirname,
+                                      TransactionToken* token) {
   return errors::Unimplemented("memmapped format doesn't support CreateDir");
 }
 
-Status MemmappedFileSystem::DeleteDir(const string& dirname) {
+Status MemmappedFileSystem::DeleteDir(const string& dirname,
+                                      TransactionToken* token) {
   return errors::Unimplemented("memmapped format doesn't support DeleteDir");
 }
 
 Status MemmappedFileSystem::RenameFile(const string& filename_from,
-                                       const string& filename_to) {
+                                       const string& filename_to,
+                                       TransactionToken* token) {
   return errors::Unimplemented("memmapped format doesn't support RenameFile");
 }
 
@@ -238,7 +251,7 @@ Status MemmappedFileSystem::InitializeFromFile(Env* env,
     }
     prev_element_offset = element_iter->offset();
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 bool MemmappedFileSystem::IsMemmappedPackageFilename(const string& filename) {
@@ -277,7 +290,7 @@ Status MemmappedEnv::GetFileSystemForFile(const string& fname,
           "MemmappedEnv is not initialized from a file.");
     }
     *result = memmapped_file_system_.get();
-    return Status::OK();
+    return OkStatus();
   }
   return EnvWrapper::GetFileSystemForFile(fname, result);
 }

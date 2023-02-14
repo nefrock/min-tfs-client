@@ -20,7 +20,6 @@ limitations under the License.
 #include <memory>
 #include <utility>
 
-#include "absl/memory/memory.h"
 #include "tensorflow/compiler/xla/literal.h"
 #include "tensorflow/compiler/xla/service/gpu/tests/gpu_codegen_test.h"
 #include "tensorflow/compiler/xla/service/hlo_computation.h"
@@ -28,8 +27,8 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/hlo_module.h"
 #include "tensorflow/compiler/xla/shape_util.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
-#include "tensorflow/core/platform/test.h"
+#include "tensorflow/tsl/lib/core/status_test_util.h"
+#include "tensorflow/tsl/platform/test.h"
 
 namespace xla {
 namespace gpu {
@@ -38,6 +37,11 @@ class GpuLdgTest : public GpuCodegenTest {};
 
 // Parameters are never overwritten, so parameter reads should get ld.global.nc
 // reads.
+//
+// On the ROCM platform the "ptx" string is not populated for the compiled
+// executable, and hence the call to CompileAdnVerifyPtx does not do the
+// "VerifyPtx" part, it merely compiles the executable
+//
 TEST_F(GpuLdgTest, LdgForParamRead) {
   HloComputation::Builder builder(TestName());
 
@@ -51,7 +55,7 @@ TEST_F(GpuLdgTest, LdgForParamRead) {
   auto hlo_module = CreateNewVerifiedModule();
   hlo_module->AddEntryComputation(std::move(computation));
 
-  CompileAndVerifyPtx(std::move(hlo_module), R"(
+  CompileAndOptionallyVerifyPtx(std::move(hlo_module), R"(
     CHECK-NOT: ld.global.f32
     CHECK: ld.global.nc.f32
   )");
@@ -60,6 +64,11 @@ TEST_F(GpuLdgTest, LdgForParamRead) {
 // Check that reading a buffer produced by a non-parameter HLO also results in
 // ld.global.nc, if that buffer isn't modified within the instruction that reads
 // it.
+//
+// On the ROCM platform the "ptx" string is not populated for the compiled
+// executable, and hence the call to CompileAdnVerifyPtx does not do the
+// "VerifyPtx" part, it merely compiles the executable
+//
 TEST_F(GpuLdgTest, LdgForNonParamRead) {
   HloComputation::Builder builder(TestName());
 
@@ -76,7 +85,7 @@ TEST_F(GpuLdgTest, LdgForNonParamRead) {
   auto hlo_module = CreateNewVerifiedModule();
   hlo_module->AddEntryComputation(std::move(computation));
 
-  CompileAndVerifyPtx(std::move(hlo_module), R"(
+  CompileAndOptionallyVerifyPtx(std::move(hlo_module), R"(
     CHECK: {
     CHECK-NOT: ld.global.f32
     CHECK: ld.global.nc.f32
@@ -94,6 +103,11 @@ TEST_F(GpuLdgTest, LdgForNonParamRead) {
 // It seems like a fair bet that we won't start fusing sin into the output of
 // reduce in the foreseeable future.  But if that turns out to be wrong, I give
 // you, future reader, permission to delete this test.
+//
+// On the ROCM platform the "ptx" string is not populated for the compiled
+// executable, and hence the call to CompileAdnVerifyPtx does not do the
+// "VerifyPtx" part, it merely compiles the executable
+//
 TEST_F(GpuLdgTest, NoLdgWhenSharingBuffer) {
   auto hlo_module = CreateNewVerifiedModule();
   HloComputation::Builder builder(TestName());
@@ -128,7 +142,7 @@ TEST_F(GpuLdgTest, NoLdgWhenSharingBuffer) {
   std::unique_ptr<HloComputation> computation = builder.Build();
   hlo_module->AddEntryComputation(std::move(computation));
 
-  CompileAndVerifyPtx(std::move(hlo_module), R"(
+  CompileAndOptionallyVerifyPtx(std::move(hlo_module), R"(
     CHECK-LABEL: .entry sin
     CHECK: {
     CHECK-NOT: ld.global.nc.f32

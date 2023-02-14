@@ -15,16 +15,13 @@
 """Convenience functions to save a model.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 
 # pylint: disable=unused-import
 from tensorflow.python.saved_model import builder
 from tensorflow.python.saved_model import constants
 from tensorflow.python.saved_model import loader
 from tensorflow.python.saved_model import main_op
+from tensorflow.python.saved_model import method_name_updater
 from tensorflow.python.saved_model import signature_constants
 from tensorflow.python.saved_model import signature_def_utils
 from tensorflow.python.saved_model import tag_constants

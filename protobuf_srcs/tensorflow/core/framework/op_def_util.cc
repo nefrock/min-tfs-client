@@ -47,7 +47,7 @@ Status AllowedTypeValue(DataType dt, const OpDef::AttrDef& attr) {
   const AttrValue& allowed_values(attr.allowed_values());
   for (auto allowed : allowed_values.list().type()) {
     if (dt == allowed) {
-      return Status::OK();
+      return OkStatus();
     }
   }
   string allowed_str;
@@ -67,7 +67,7 @@ Status AllowedStringValue(const string& str, const OpDef::AttrDef& attr) {
   const AttrValue& allowed_values(attr.allowed_values());
   for (const auto& allowed : allowed_values.list().s()) {
     if (str == allowed) {
-      return Status::OK();
+      return OkStatus();
     }
   }
   string allowed_str;
@@ -145,7 +145,7 @@ Status ValidateAttrValue(const AttrValue& attr_value,
           "Support for allowed_values not implemented for type ", attr.type());
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 const OpDef::AttrDef* FindAttr(StringPiece name, const OpDef& op_def) {
@@ -246,7 +246,7 @@ static Status ValidateArg(const OpDef::ArgDef& arg, const OpDef& op_def,
              DataTypeString(arg.type()), "'. Use 'Ref(type)' instead", suffix);
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 bool IsValidOpName(StringPiece sp) {
@@ -345,7 +345,7 @@ Status ValidateOpDef(const OpDef& op_def) {
     TF_RETURN_IF_ERROR(ValidateArg(arg, op_def, true, &names));
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 #undef VALIDATE
@@ -374,7 +374,7 @@ Status CheckOpDeprecation(const OpDef& op_def, int graph_def_version) {
       }
     }
   }
-  return Status::OK();
+  return OkStatus();
 }
 
 namespace {
@@ -430,6 +430,9 @@ string SummarizeOpDef(const OpDef& op_def) {
   }
   if (op_def.allows_uninitialized_input()) {
     strings::StrAppend(&ret, "; allows_uninitialized_input=true");
+  }
+  if (op_def.is_distributed_communication()) {
+    strings::StrAppend(&ret, "; is_distributed_communication=true");
   }
   strings::StrAppend(&ret, ">");
   return ret;
@@ -661,7 +664,7 @@ Status OpDefCompatible(const OpDef& old_op, const OpDef& new_op) {
            "' vs. '", new_in_sig, "'");
   VALIDATE(old_in_ref.size() == new_in_ref.size(),  // Should not happen
            "Unexpected change in input ref lists.");
-  for (int i = 0; i < old_in_ref.size(); ++i) {
+  for (int i = 0, end = old_in_ref.size(); i < end; ++i) {
     // Allowed to remove "ref" from an input (or leave it unchanged).
     VALIDATE(old_in_ref[i] || !new_in_ref[i], "Input ", i,
              " changed from non-ref to ref");
@@ -677,13 +680,13 @@ Status OpDefCompatible(const OpDef& old_op, const OpDef& new_op) {
            old_out_sig, "' vs. '", new_out_sig, "'");
   VALIDATE(old_out_ref.size() == new_out_ref.size(),  // Should not happen
            "Unexpected change in output ref lists");
-  for (int i = 0; i < old_out_ref.size(); ++i) {
+  for (int i = 0, end = old_out_ref.size(); i < end; ++i) {
     // Allowed to add "ref" to an output (or leave it unchanged).
     VALIDATE(!old_out_ref[i] || new_out_ref[i], "Output ", i,
              " changed from ref to non-ref");
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpDefAddedDefaultsUnchanged(const OpDef& old_op,
@@ -722,7 +725,7 @@ Status OpDefAddedDefaultsUnchanged(const OpDef& old_op,
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 Status OpDefAttrDefaultsUnchanged(const OpDef& old_op, const OpDef& new_op) {
@@ -751,7 +754,7 @@ Status OpDefAttrDefaultsUnchanged(const OpDef& old_op, const OpDef& new_op) {
     }
   }
 
-  return Status::OK();
+  return OkStatus();
 }
 
 void RemoveNonDeprecationDescriptionsFromOpDef(OpDef* op_def) {
@@ -783,11 +786,13 @@ void RemoveDescriptionsFromOpList(OpList* op_list) {
 }
 
 bool AttrDefEqual(const OpDef::AttrDef& a1, const OpDef::AttrDef& a2) {
-#ifndef TENSORFLOW_LITE_PROTOS
-  DCHECK_EQ(7, a1.GetDescriptor()->field_count())
-      << "Please modify these equality and hash functions to reflect the "
-         "changes to the AttrDef protobuf";
-#endif  // TENSORFLOW_LITE_PROTOS
+  if (std::is_base_of<protobuf::Message, OpDef::AttrDef>()) {
+    DCHECK_EQ(7, reinterpret_cast<const protobuf::Message*>(&a1)
+                     ->GetDescriptor()
+                     ->field_count())
+        << "Please modify these equality and hash functions to reflect the "
+           "changes to the AttrDef protobuf";
+  }
 
   if (a1.name() != a2.name()) return false;
   if (a1.type() != a2.type()) return false;
@@ -816,9 +821,10 @@ bool RepeatedAttrDefEqual(
     const protobuf::RepeatedPtrField<OpDef::AttrDef>& a2) {
   std::unordered_map<string, const OpDef::AttrDef*> a1_set;
   for (const OpDef::AttrDef& def : a1) {
-    DCHECK(a1_set.find(def.name()) == a1_set.end())
-        << "AttrDef names must be unique, but '" << def.name()
-        << "' appears more than once";
+    if (a1_set.find(def.name()) != a1_set.end()) {
+      LOG(ERROR) << "AttrDef names must be unique, but '" << def.name()
+                 << "' appears more than once";
+    }
     a1_set[def.name()] = &def;
   }
   for (const OpDef::AttrDef& def : a2) {

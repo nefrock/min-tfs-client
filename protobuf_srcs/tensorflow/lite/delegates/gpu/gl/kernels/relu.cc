@@ -16,9 +16,12 @@ limitations under the License.
 #include "tensorflow/lite/delegates/gpu/gl/kernels/relu.h"
 
 #include <algorithm>
+#include <any>
 #include <cstdint>
 #include <cstring>
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "absl/memory/memory.h"
@@ -33,9 +36,9 @@ namespace {
 
 class ReLU : public NodeShader {
  public:
-  Status GenerateCode(const GenerationContext& ctx,
-                      GeneratedCode* generated_code) const final {
-    auto attr = absl::any_cast<ReLUAttributes>(ctx.node->operation.attributes);
+  absl::Status GenerateCode(const GenerationContext& ctx,
+                            GeneratedCode* generated_code) const final {
+    const auto& attr = std::any_cast<const ReLUAttributes&>(ctx.op_attr);
     // clamp(value, min(0, alpha * value), clip)
     std::vector<Variable> params;
     std::string min;
@@ -62,14 +65,14 @@ class ReLU : public NodeShader {
         /*input=*/IOStructure::AUTO,
         /*output=*/IOStructure::AUTO,
     };
-    return OkStatus();
+    return absl::OkStatus();
   }
 };
 
 }  // namespace
 
 std::unique_ptr<NodeShader> NewReLUNodeShader() {
-  return absl::make_unique<ReLU>();
+  return std::make_unique<ReLU>();
 }
 
 }  // namespace gl

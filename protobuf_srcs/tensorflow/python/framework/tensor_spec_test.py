@@ -14,14 +14,14 @@
 # ==============================================================================
 """Tests for tensor_spec."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import pickle
 
+from absl.testing import parameterized
 import numpy as np
 
+from tensorflow.core.framework import full_type_pb2
+from tensorflow.core.function import trace_type
+from tensorflow.python.eager import context
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import ops
@@ -29,11 +29,29 @@ from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import tensor_spec
 from tensorflow.python.framework import test_util
 from tensorflow.python.framework import type_spec
+from tensorflow.python.framework.type_utils import fulltypes_for_flat_tensors
 from tensorflow.python.ops import array_ops
 from tensorflow.python.platform import googletest
 
 
-class TensorSpecTest(test_util.TensorFlowTestCase):
+class SpecNameSanizationTest(test_util.TensorFlowTestCase):
+
+  def test_sanitization(self):
+    self.assertEqual(tensor_spec.sanitize_spec_name("normal"), "normal")
+    self.assertEqual(
+        tensor_spec.sanitize_spec_name("123nums"), "tensor_123nums")
+    self.assertEqual(tensor_spec.sanitize_spec_name("____"), "tensor_____")
+    self.assertEqual(tensor_spec.sanitize_spec_name("_abc"), "tensor__abc")
+    self.assertEqual(tensor_spec.sanitize_spec_name("AdEfG"), "adefg")
+    self.assertEqual(
+        tensor_spec.sanitize_spec_name("1_2_3_a"), "tensor_1_2_3_a")
+    self.assertEqual(tensor_spec.sanitize_spec_name("a_1-2"), "a_1_2")
+    self.assertEqual(tensor_spec.sanitize_spec_name("f6%hj"), "f6_hj")
+    self.assertEqual(tensor_spec.sanitize_spec_name("45&%"), "tensor_45__")
+    self.assertEqual(tensor_spec.sanitize_spec_name(""), "unknown")
+
+
+class TensorSpecTest(test_util.TensorFlowTestCase, parameterized.TestCase):
 
   def testDefaultDType(self):
     desc = tensor_spec.TensorSpec([1])
@@ -51,41 +69,41 @@ class TensorSpecTest(test_util.TensorFlowTestCase):
     desc = tensor_spec.TensorSpec(shape=None, dtype=dtypes.float32)
     self.assertEqual(desc.shape, tensor_shape.TensorShape(None))
 
-  @test_util.run_deprecated_v1
   def testShapeCompatibility(self):
-    unknown = array_ops.placeholder(dtypes.int64)
-    partial = array_ops.placeholder(dtypes.int64, shape=[None, 1])
-    full = array_ops.placeholder(dtypes.int64, shape=[2, 3])
-    rank3 = array_ops.placeholder(dtypes.int64, shape=[4, 5, 6])
+    # This test needs a placeholder which means we need to construct a graph.
+    with ops.Graph().as_default():
+      unknown = array_ops.placeholder(dtypes.int64)
+      partial = array_ops.placeholder(dtypes.int64, shape=[None, 1])
+      full = array_ops.placeholder(dtypes.int64, shape=[2, 3])
+      rank3 = array_ops.placeholder(dtypes.int64, shape=[4, 5, 6])
 
-    desc_unknown = tensor_spec.TensorSpec(None, dtypes.int64)
-    self.assertTrue(desc_unknown.is_compatible_with(unknown))
-    self.assertTrue(desc_unknown.is_compatible_with(partial))
-    self.assertTrue(desc_unknown.is_compatible_with(full))
-    self.assertTrue(desc_unknown.is_compatible_with(rank3))
+      desc_unknown = tensor_spec.TensorSpec(None, dtypes.int64)
+      self.assertTrue(desc_unknown.is_compatible_with(unknown))
+      self.assertTrue(desc_unknown.is_compatible_with(partial))
+      self.assertTrue(desc_unknown.is_compatible_with(full))
+      self.assertTrue(desc_unknown.is_compatible_with(rank3))
 
-    desc_partial = tensor_spec.TensorSpec([2, None], dtypes.int64)
-    self.assertTrue(desc_partial.is_compatible_with(unknown))
-    self.assertTrue(desc_partial.is_compatible_with(partial))
-    self.assertTrue(desc_partial.is_compatible_with(full))
-    self.assertFalse(desc_partial.is_compatible_with(rank3))
+      desc_partial = tensor_spec.TensorSpec([2, None], dtypes.int64)
+      self.assertTrue(desc_partial.is_compatible_with(unknown))
+      self.assertTrue(desc_partial.is_compatible_with(partial))
+      self.assertTrue(desc_partial.is_compatible_with(full))
+      self.assertFalse(desc_partial.is_compatible_with(rank3))
 
-    desc_full = tensor_spec.TensorSpec([2, 3], dtypes.int64)
-    self.assertTrue(desc_full.is_compatible_with(unknown))
-    self.assertFalse(desc_full.is_compatible_with(partial))
-    self.assertTrue(desc_full.is_compatible_with(full))
-    self.assertFalse(desc_full.is_compatible_with(rank3))
+      desc_full = tensor_spec.TensorSpec([2, 3], dtypes.int64)
+      self.assertTrue(desc_full.is_compatible_with(unknown))
+      self.assertFalse(desc_full.is_compatible_with(partial))
+      self.assertTrue(desc_full.is_compatible_with(full))
+      self.assertFalse(desc_full.is_compatible_with(rank3))
 
-    desc_rank3 = tensor_spec.TensorSpec([4, 5, 6], dtypes.int64)
-    self.assertTrue(desc_rank3.is_compatible_with(unknown))
-    self.assertFalse(desc_rank3.is_compatible_with(partial))
-    self.assertFalse(desc_rank3.is_compatible_with(full))
-    self.assertTrue(desc_rank3.is_compatible_with(rank3))
+      desc_rank3 = tensor_spec.TensorSpec([4, 5, 6], dtypes.int64)
+      self.assertTrue(desc_rank3.is_compatible_with(unknown))
+      self.assertFalse(desc_rank3.is_compatible_with(partial))
+      self.assertFalse(desc_rank3.is_compatible_with(full))
+      self.assertTrue(desc_rank3.is_compatible_with(rank3))
 
-  @test_util.run_deprecated_v1
   def testTypeCompatibility(self):
-    floats = array_ops.placeholder(dtypes.float32, shape=[10, 10])
-    ints = array_ops.placeholder(dtypes.int32, shape=[10, 10])
+    floats = constant_op.constant(1, dtype=dtypes.float32, shape=[10, 10])
+    ints = constant_op.constant(1, dtype=dtypes.int32, shape=[10, 10])
     desc = tensor_spec.TensorSpec(shape=(10, 10), dtype=dtypes.float32)
     self.assertTrue(desc.is_compatible_with(floats))
     self.assertFalse(desc.is_compatible_with(ints))
@@ -101,45 +119,44 @@ class TensorSpecTest(test_util.TensorFlowTestCase):
   def testRepr(self):
     desc1 = tensor_spec.TensorSpec([1], dtypes.float32, name="beep")
     self.assertEqual(
-        repr(desc1),
-        "TensorSpec(shape=(1,), dtype=tf.float32, name='beep')")
+        repr(desc1), "TensorSpec(shape=(1,), dtype=tf.float32, name='beep')")
     desc2 = tensor_spec.TensorSpec([1, None], dtypes.int32)
     if desc2.shape._v2_behavior:
       self.assertEqual(
-          repr(desc2),
-          "TensorSpec(shape=(1, None), dtype=tf.int32, name=None)")
+          repr(desc2), "TensorSpec(shape=(1, None), dtype=tf.int32, name=None)")
     else:
       self.assertEqual(
-          repr(desc2),
-          "TensorSpec(shape=(1, ?), dtype=tf.int32, name=None)")
+          repr(desc2), "TensorSpec(shape=(1, ?), dtype=tf.int32, name=None)")
 
   def testFromTensorSpec(self):
     spec_1 = tensor_spec.TensorSpec((1, 2), dtypes.int32)
     spec_2 = tensor_spec.TensorSpec.from_spec(spec_1)
     self.assertEqual(spec_1, spec_2)
 
-  @test_util.run_deprecated_v1
   def testFromTensor(self):
     zero = constant_op.constant(0)
     spec = tensor_spec.TensorSpec.from_tensor(zero)
     self.assertEqual(spec.dtype, dtypes.int32)
     self.assertEqual(spec.shape, [])
-    self.assertEqual(spec.name, "Const")
+    # Tensor.name is meaningless when eager execution is enabled.
+    if not context.executing_eagerly():
+      self.assertEqual(spec.name, "Const")
 
-  @test_util.run_deprecated_v1
   def testFromPlaceholder(self):
-    unknown = array_ops.placeholder(dtypes.int64, name="unknown")
-    partial = array_ops.placeholder(dtypes.float32,
-                                    shape=[None, 1],
-                                    name="partial")
-    spec_1 = tensor_spec.TensorSpec.from_tensor(unknown)
-    self.assertEqual(spec_1.dtype, dtypes.int64)
-    self.assertEqual(spec_1.shape, None)
-    self.assertEqual(spec_1.name, "unknown")
-    spec_2 = tensor_spec.TensorSpec.from_tensor(partial)
-    self.assertEqual(spec_2.dtype, dtypes.float32)
-    self.assertEqual(spec_2.shape.as_list(), [None, 1])
-    self.assertEqual(spec_2.name, "partial")
+    # This test needs a placeholder which means we need to construct a graph.
+    with ops.Graph().as_default():
+      unknown = array_ops.placeholder(dtypes.int64, name="unknown")
+      partial = array_ops.placeholder(
+          dtypes.float32, shape=[None, 1], name="partial")
+
+      spec_1 = tensor_spec.TensorSpec.from_tensor(unknown)
+      self.assertEqual(spec_1.dtype, dtypes.int64)
+      self.assertEqual(spec_1.shape, None)
+      self.assertEqual(spec_1.name, "unknown")
+      spec_2 = tensor_spec.TensorSpec.from_tensor(partial)
+      self.assertEqual(spec_2.dtype, dtypes.float32)
+      self.assertEqual(spec_2.shape.as_list(), [None, 1])
+      self.assertEqual(spec_2.name, "partial")
 
   def testFromBoundedTensorSpec(self):
     bounded_spec = tensor_spec.BoundedTensorSpec((1, 2), dtypes.int32, 0, 1)
@@ -148,7 +165,7 @@ class TensorSpecTest(test_util.TensorFlowTestCase):
     self.assertEqual(bounded_spec.dtype, spec.dtype)
     self.assertEqual(bounded_spec.name, spec.name)
 
-  def testSerialization(self):
+  def testPickleSerialization(self):
     desc = tensor_spec.TensorSpec([1, 5], dtypes.float32, "test")
     self.assertEqual(pickle.loads(pickle.dumps(desc)), desc)
 
@@ -168,43 +185,115 @@ class TensorSpecTest(test_util.TensorFlowTestCase):
       # Check that creating TypeSpecs did not require building new Tensors.
       self.assertLen(g.get_operations(), len(ops_before))
 
+  def testEqualTypes(self):
+    signature_context = trace_type.InternalTracingContext()
+    type_1 = tensor_spec.TensorSpec(
+        tensor_shape.TensorShape([1, 2, 3]), dtypes.float32,
+        None).__tf_tracing_type__(signature_context)
+    type_2 = tensor_spec.TensorSpec(
+        tensor_shape.TensorShape([1, 2, 3]), dtypes.float32,
+        None).__tf_tracing_type__(signature_context)
+    self.assertEqual(type_1, type_1)
+    self.assertEqual(type_1, type_2)
+    self.assertTrue(type_1.is_subtype_of(type_1))
+    self.assertTrue(type_2.is_subtype_of(type_1))
+    self.assertTrue(type_1.is_subtype_of(type_2))
+
+  def testDtypeMismatch(self):
+    signature_context = trace_type.InternalTracingContext()
+    type_1 = tensor_spec.TensorSpec(
+        tensor_shape.TensorShape([1, 2, 3]), dtypes.float32,
+        None).__tf_tracing_type__(signature_context)
+    type_2 = tensor_spec.TensorSpec(
+        tensor_shape.TensorShape([1, 2, 3]), dtypes.int32,
+        None).__tf_tracing_type__(signature_context)
+    self.assertNotEqual(type_1, type_2)
+    self.assertFalse(type_2.is_subtype_of(type_1))
+    self.assertFalse(type_1.is_subtype_of(type_2))
+
+  def testSubtypeOfShapeless(self):
+    signature_context = trace_type.InternalTracingContext()
+    type_1 = tensor_spec.TensorSpec(
+        tensor_shape.TensorShape(None), dtypes.float32,
+        None).__tf_tracing_type__(signature_context)
+    type_2 = tensor_spec.TensorSpec(
+        tensor_shape.TensorShape([1, 2, 3]), dtypes.float32,
+        None).__tf_tracing_type__(signature_context)
+    self.assertNotEqual(type_1, type_2)
+    self.assertFalse(type_1.is_subtype_of(type_2))
+    self.assertTrue(type_2.is_subtype_of(type_1))
+
+  def testSubtypeOfDimlessShape(self):
+    signature_context = trace_type.InternalTracingContext()
+    type_1 = tensor_spec.TensorSpec(
+        tensor_shape.TensorShape([None, None, None]), dtypes.float32,
+        None).__tf_tracing_type__(signature_context)
+    type_2 = tensor_spec.TensorSpec(
+        tensor_shape.TensorShape([1, 2, 3]), dtypes.float32,
+        None).__tf_tracing_type__(signature_context)
+    self.assertNotEqual(type_1, type_2)
+    self.assertFalse(type_1.is_subtype_of(type_2))
+    self.assertTrue(type_2.is_subtype_of(type_1))
+
+  def testFlatTensorSpecs(self):
+    spec = tensor_spec.TensorSpec([1], np.float32)
+    self.assertEqual(spec._flat_tensor_specs, [spec])
+
+  def testFullTypesForFlatTensors(self):
+    spec = tensor_spec.TensorSpec([1], np.float32)
+    full_type_list = fulltypes_for_flat_tensors(spec)
+    expect = [full_type_pb2.FullTypeDef(type_id=full_type_pb2.TFT_UNSET)]
+    self.assertEqual(len(spec._flat_tensor_specs), len(full_type_list))
+    self.assertEqual(expect, full_type_list)
+
+  def testSerialization(self):
+    nameless = tensor_spec.TensorSpec([1], np.float32)
+    named = tensor_spec.TensorSpec([1, 2, 3], np.float32, name="some_name")
+    self.assertEqual(nameless,
+                     trace_type.deserialize(trace_type.serialize(nameless)))
+    self.assertEqual(named, trace_type.deserialize(trace_type.serialize(named)))
+
 
 class BoundedTensorSpecTest(test_util.TensorFlowTestCase):
 
   def testInvalidMinimum(self):
-    with self.assertRaisesRegexp(ValueError, "not compatible"):
+    with self.assertRaisesRegex(ValueError, "not compatible"):
       tensor_spec.BoundedTensorSpec((3, 5), dtypes.uint8, (0, 0, 0), (1, 1))
 
   def testInvalidMaximum(self):
-    with self.assertRaisesRegexp(ValueError, "not compatible"):
+    with self.assertRaisesRegex(ValueError, "not compatible"):
       tensor_spec.BoundedTensorSpec((3, 5), dtypes.uint8, 0, (1, 1, 1))
 
   def testMinimumMaximumAttributes(self):
-    spec = tensor_spec.BoundedTensorSpec(
-        (1, 2, 3), dtypes.float32, 0, (5, 5, 5))
+    spec = tensor_spec.BoundedTensorSpec((1, 2, 3), dtypes.float32, 0,
+                                         (5, 5, 5))
     self.assertEqual(type(spec.minimum), np.ndarray)
     self.assertEqual(type(spec.maximum), np.ndarray)
     self.assertAllEqual(spec.minimum, np.array(0, dtype=np.float32))
     self.assertAllEqual(spec.maximum, np.array([5, 5, 5], dtype=np.float32))
 
   def testNotWriteableNP(self):
-    spec = tensor_spec.BoundedTensorSpec(
-        (1, 2, 3), dtypes.float32, 0, (5, 5, 5))
-    with self.assertRaisesRegexp(ValueError, "read-only"):
+    spec = tensor_spec.BoundedTensorSpec((1, 2, 3), dtypes.float32, 0,
+                                         (5, 5, 5))
+    with self.assertRaisesRegex(ValueError, "read-only"):
       spec.minimum[0] = -1
-    with self.assertRaisesRegexp(ValueError, "read-only"):
+    with self.assertRaisesRegex(ValueError, "read-only"):
       spec.maximum[0] = 100
 
   def testReuseSpec(self):
-    spec_1 = tensor_spec.BoundedTensorSpec((1, 2), dtypes.int32,
-                                           minimum=0, maximum=1)
-    spec_2 = tensor_spec.BoundedTensorSpec(
-        spec_1.shape, spec_1.dtype, spec_1.minimum, spec_1.maximum)
+    spec_1 = tensor_spec.BoundedTensorSpec((1, 2),
+                                           dtypes.int32,
+                                           minimum=0,
+                                           maximum=1)
+    spec_2 = tensor_spec.BoundedTensorSpec(spec_1.shape, spec_1.dtype,
+                                           spec_1.minimum, spec_1.maximum)
     self.assertEqual(spec_1, spec_2)
 
   def testScalarBounds(self):
-    spec = tensor_spec.BoundedTensorSpec(
-        (), dtypes.float32, minimum=0.0, maximum=1.0)
+    spec = tensor_spec.BoundedTensorSpec((),
+                                         dtypes.float32,
+                                         minimum=0.0,
+                                         maximum=1.0)
 
     self.assertIsInstance(spec.minimum, np.ndarray)
     self.assertIsInstance(spec.maximum, np.ndarray)
@@ -214,23 +303,24 @@ class BoundedTensorSpecTest(test_util.TensorFlowTestCase):
     self.assertEqual(1.0, spec.maximum)
 
     # Check that the spec doesn't fail its own input validation.
-    _ = tensor_spec.BoundedTensorSpec(
-        spec.shape, spec.dtype, spec.minimum, spec.maximum)
+    _ = tensor_spec.BoundedTensorSpec(spec.shape, spec.dtype, spec.minimum,
+                                      spec.maximum)
 
   def testFromBoundedTensorSpec(self):
-    spec_1 = tensor_spec.BoundedTensorSpec((1, 2), dtypes.int32,
-                                           minimum=0, maximum=1)
+    spec_1 = tensor_spec.BoundedTensorSpec((1, 2),
+                                           dtypes.int32,
+                                           minimum=0,
+                                           maximum=1)
     spec_2 = tensor_spec.BoundedTensorSpec.from_spec(spec_1)
     self.assertEqual(spec_1, spec_2)
 
   def testEquality(self):
-    spec_1_1 = tensor_spec.BoundedTensorSpec((1, 2, 3), dtypes.float32,
-                                             0, (5, 5, 5))
-    spec_1_2 = tensor_spec.BoundedTensorSpec((1, 2, 3), dtypes.float32,
-                                             0.00000001,
-                                             (5, 5, 5.00000000000000001))
-    spec_2_1 = tensor_spec.BoundedTensorSpec((1, 2, 3), dtypes.float32,
-                                             1, (5, 5, 5))
+    spec_1_1 = tensor_spec.BoundedTensorSpec((1, 2, 3), dtypes.float32, 0,
+                                             (5, 5, 5))
+    spec_1_2 = tensor_spec.BoundedTensorSpec(
+        (1, 2, 3), dtypes.float32, 0.00000001, (5, 5, 5.00000000000000001))
+    spec_2_1 = tensor_spec.BoundedTensorSpec((1, 2, 3), dtypes.float32, 1,
+                                             (5, 5, 5))
     spec_2_2 = tensor_spec.BoundedTensorSpec((1, 2, 3), dtypes.float32,
                                              (1, 1, 1), (5, 5, 5))
     spec_2_3 = tensor_spec.BoundedTensorSpec((1, 2, 3), dtypes.float32,
@@ -263,9 +353,20 @@ class BoundedTensorSpecTest(test_util.TensorFlowTestCase):
     self.assertEqual(spec.dtype.max, bounded_spec.maximum)
     self.assertEqual(spec.name, bounded_spec.name)
 
-  def testSerialization(self):
+  def testPickleSerialization(self):
     desc = tensor_spec.BoundedTensorSpec([1, 5], dtypes.float32, -1, 1, "test")
     self.assertEqual(pickle.loads(pickle.dumps(desc)), desc)
+
+  def testSerialization(self):
+    nameless = tensor_spec.BoundedTensorSpec([1], np.float32, 0, 1)
+    named = tensor_spec.BoundedTensorSpec([1, 2, 3],
+                                          np.float32,
+                                          0,
+                                          1,
+                                          name="some_name")
+    self.assertEqual(nameless,
+                     trace_type.deserialize(trace_type.serialize(nameless)))
+    self.assertEqual(named, trace_type.deserialize(trace_type.serialize(named)))
 
 
 if __name__ == "__main__":

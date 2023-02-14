@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for tensorflow.python.framework.importer."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
 
 from google.protobuf import text_format
@@ -32,6 +28,7 @@ from tensorflow.python.framework import importer
 from tensorflow.python.framework import ops
 from tensorflow.python.framework import tensor_shape
 from tensorflow.python.framework import test_ops  # pylint: disable=unused-import
+from tensorflow.python.framework import test_util
 from tensorflow.python.framework import versions
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import control_flow_ops
@@ -465,29 +462,14 @@ class ImportGraphDefTest(test.TestCase):
     error_msg = ("Input 0 of node import/B was passed int32 from import/A:0 "
                  "incompatible with expected float.")
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(ValueError, error_msg):
+      with self.assertRaisesRegex(ValueError, error_msg):
         importer.import_graph_def(
             self._MakeGraphDef("""
             node { name: 'A' op: 'IntOutput' }
             node { name: 'B' op: 'FloatInput' input: 'A:0' }
             """))
 
-  def testShapeWhitelist(self):
-    # Barrier's shape is an output vector of 2, but the
-    # graph says it's a scalar.  This is currently whitelisted.
-    with ops.Graph().as_default():
-      _ = importer.import_graph_def(
-          self._MakeGraphDef("""
-          node { name: 'A' op: 'Barrier'
-                 attr { key: '_output_shapes'
-                        value { list { shape { } } } }
-                 attr { key: 'component_types'
-                        value { list { type: DT_FLOAT } } } }
-          """),
-          return_elements=["A"],
-          name="import")
-
-  def testShapeWhitelistViolation(self):
+  def testShapeAllowlistViolation(self):
     # L2 loss produces a scalar shape, but the graph
     # has the wrong shape, so raise an error.
     with ops.Graph().as_default():
@@ -509,7 +491,7 @@ class ImportGraphDefTest(test.TestCase):
   def testInvalidSignatureTooManyInputsInGraphDef(self):
     with ops.Graph().as_default():
       # TODO(skyewm): improve error message
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError,
           "NodeDef expected inputs '' do not match 1 inputs specified"):
         importer.import_graph_def(
@@ -521,7 +503,7 @@ class ImportGraphDefTest(test.TestCase):
   def testInvalidSignatureNotEnoughInputsInGraphDef(self):
     with ops.Graph().as_default():
       # TODO(skyewm): improve error message
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError,
           "NodeDef expected inputs 'int32, float' do not match 1 inputs "
           "specified"):
@@ -533,8 +515,8 @@ class ImportGraphDefTest(test.TestCase):
 
   def testMissingInputOpInGraphDef(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(ValueError,
-                                   "Node 'B': Unknown input node 'A:0'"):
+      with self.assertRaisesRegex(ValueError,
+                                  "Node 'B': Unknown input node 'A:0'"):
         importer.import_graph_def(
             self._MakeGraphDef("""
             node { name: 'B' op: 'FloatInput' input: 'A:0' }
@@ -553,7 +535,7 @@ class ImportGraphDefTest(test.TestCase):
 
   def testMissingInputTensorInGraphDef(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError,
           "Node 'B': Connecting to invalid output 1 of source node A "
           "which has 1 outputs"):
@@ -565,8 +547,8 @@ class ImportGraphDefTest(test.TestCase):
 
   def testMissingControlInputInGraphDef(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(ValueError,
-                                   r"Node 'B': Unknown input node '\^A'"):
+      with self.assertRaisesRegex(ValueError,
+                                  r"Node 'B': Unknown input node '\^A'"):
         importer.import_graph_def(
             self._MakeGraphDef("""
             node { name: 'B' op: 'None' input: '^A' }
@@ -574,8 +556,8 @@ class ImportGraphDefTest(test.TestCase):
 
   def testInvalidTensorNameOutputIndexInGraphDef(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(ValueError,
-                                   "Node 'B': Unknown input node 'A:B'"):
+      with self.assertRaisesRegex(ValueError,
+                                  "Node 'B': Unknown input node 'A:B'"):
         importer.import_graph_def(
             self._MakeGraphDef("""
             node { name: 'B' op: 'None' input: 'A:B' }
@@ -583,8 +565,8 @@ class ImportGraphDefTest(test.TestCase):
 
   def testInvalidTensorNameInGraphDef(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(ValueError,
-                                   "Node 'B': Unknown input node 'A:B:0'"):
+      with self.assertRaisesRegex(ValueError,
+                                  "Node 'B': Unknown input node 'A:B:0'"):
         importer.import_graph_def(
             self._MakeGraphDef("""
             node { name: 'B' op: 'None' input: 'A:B:0' }
@@ -592,7 +574,7 @@ class ImportGraphDefTest(test.TestCase):
 
   def testMissingReturnOperation(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError, "Requested return node 'B' not found in graph def"):
         importer.import_graph_def(
             self._MakeGraphDef("""
@@ -602,7 +584,7 @@ class ImportGraphDefTest(test.TestCase):
 
   def testMissingReturnTensor(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError,
           r"Invalid return output 1 of node 'A', which has 1 output\(s\)"):
         importer.import_graph_def(
@@ -611,7 +593,7 @@ class ImportGraphDefTest(test.TestCase):
             """),
             return_elements=["A:1"])
 
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError, "Requested return tensor 'B:0' not found in graph def"):
         importer.import_graph_def(
             self._MakeGraphDef("""
@@ -619,8 +601,8 @@ class ImportGraphDefTest(test.TestCase):
             """),
             return_elements=["B:0"])
 
-      with self.assertRaisesRegexp(ValueError,
-                                   "Cannot convert 'A:B:0' to a tensor name."):
+      with self.assertRaisesRegex(ValueError,
+                                  "Cannot convert 'A:B:0' to a tensor name."):
         importer.import_graph_def(
             self._MakeGraphDef("""
             node { name: 'A' op: 'IntOutput' }
@@ -629,7 +611,7 @@ class ImportGraphDefTest(test.TestCase):
 
   def testMissingInputMap(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError,
           r"Attempted to map inputs that were not found in graph_def: \[B:0\]"):
         importer.import_graph_def(
@@ -648,7 +630,7 @@ class ImportGraphDefTest(test.TestCase):
           input_map={"A:0": constant_op.constant(5.0)})
 
       # Mapping a non-existent output of an existing node should fail.
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError,
           r"Attempted to map inputs that were not found in graph_def: \[A:2\]"):
         importer.import_graph_def(
@@ -659,7 +641,7 @@ class ImportGraphDefTest(test.TestCase):
 
   def testInputMapTypeMismatch(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError, "Input 0 of node import/B was passed float from Const:0 "
           "incompatible with expected int32."):
         importer.import_graph_def(
@@ -885,7 +867,7 @@ class ImportGraphDefTest(test.TestCase):
           } }""")
 
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError, "Node 'B' expects to be colocated with unknown node 'A'"):
         importer.import_graph_def(
             original_graph_def, return_elements=["B"], name="imported_graph")
@@ -898,17 +880,17 @@ class ImportGraphDefTest(test.TestCase):
 
   def testInvalidInputForGraphDef(self):
     with ops.Graph().as_default():
-      with self.assertRaises(TypeError) as e:
+      with self.assertRaisesRegex(
+          TypeError, r"Argument `graph_def` must be a GraphDef proto."):
         importer.import_graph_def("")
-      self.assertEqual("graph_def must be a GraphDef proto.", str(e.exception))
 
   def testInvalidInputForInputMap(self):
     with ops.Graph().as_default():
-      with self.assertRaises(TypeError) as e:
+      with self.assertRaisesRegex(
+          TypeError,
+          r"Argument `input_map` must be a dictionary. Obtained list"):
         importer.import_graph_def(
             self._MakeGraphDef(""), input_map=[constant_op.constant(5.0)])
-      self.assertEqual("input_map must be a dictionary mapping strings to "
-                       "Tensor objects.", str(e.exception))
     graph_def = self._MakeGraphDef("""
          node { name: 'a' op: 'Placeholder'
                 attr { key: 'dtype' value { type: DT_FLOAT } }}
@@ -934,17 +916,17 @@ class ImportGraphDefTest(test.TestCase):
 
   def testInvalidInputForReturnOperations(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(
-          TypeError, "return_elements must be a list of strings."):
+      with self.assertRaisesRegex(
+          TypeError, "Argument `return_elements` must be a list of strings."):
         importer.import_graph_def(self._MakeGraphDef(""), return_elements=[7])
 
-      with self.assertRaisesRegexp(ValueError,
-                                   "Cannot convert 'a:b:c' to a tensor name."):
+      with self.assertRaisesRegex(ValueError,
+                                  "Cannot convert 'a:b:c' to a tensor name."):
         importer.import_graph_def(
             self._MakeGraphDef(""), return_elements=["a:b:c"])
 
   def testDuplicateOperationNames(self):
-    with self.assertRaisesRegexp(ValueError, "Node 'A' is not unique"):
+    with self.assertRaisesRegex(ValueError, "Node 'A' is not unique"):
       importer.import_graph_def(
           self._MakeGraphDef("""
           node { name: 'A' op: 'IntOutput' }
@@ -952,6 +934,7 @@ class ImportGraphDefTest(test.TestCase):
           node { name: 'A' op: 'IntOutput' }
           """))
 
+  @test_util.run_v1_only("v1 Tensor doesn't have attribute 'numpy'")
   def testWithExtensionAndAttr(self):
     with ops.Graph().as_default() as g:
       c = constant_op.constant(5.0, dtype=dtypes.float32, name="c")
@@ -960,7 +943,7 @@ class ImportGraphDefTest(test.TestCase):
 
     with self.cached_session():
       pack, = importer.import_graph_def(gdef, return_elements=["pack"])
-      self.assertAllEqual(pack.outputs[0].eval(), [5.0, 5.0])
+      self.assertAllEqual(pack.outputs[0], [5.0, 5.0])
 
   def testWithDevice(self):
     with ops.Graph().as_default() as g:
@@ -1092,7 +1075,7 @@ class ImportGraphDefTest(test.TestCase):
 
   def testVersionLow(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           Exception,
           r"GraphDef producer version -1 below min producer %d supported "
           r"by TensorFlow \S+\.  Please regenerate your graph.$" %
@@ -1101,7 +1084,7 @@ class ImportGraphDefTest(test.TestCase):
 
   def testVersionHigh(self):
     with ops.Graph().as_default():
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError,
           r"GraphDef min consumer version %d above current version %d "
           r"for TensorFlow \S+\.  Please upgrade TensorFlow\.$" %
@@ -1152,7 +1135,7 @@ class ImportGraphDefTest(test.TestCase):
           """),
           return_elements=["A"],
           producer_op_list=producer_op_list)
-      with self.assertRaisesRegexp(
+      with self.assertRaisesRegex(
           ValueError, "Operation 'import/A' has no attr named 'default_int'."):
         a[0].get_attr("default_int")
 
@@ -1234,6 +1217,8 @@ class ImportGraphDefTest(test.TestCase):
         self.assertEqual(sess.run("external:0"), 11)
         self.assertEqual(sess.run("outer:0"), 21)
 
+  @test_util.run_v1_only("import inside defun not supported when eager "
+                         "execution is enabled.")
   def testImportInsideDefun(self):
     g = ops.Graph()
     with g.as_default():
@@ -1258,6 +1243,8 @@ class ImportGraphDefTest(test.TestCase):
       z_val = self.evaluate(z)
       self.assertEqual(z_val, -2.0)
 
+  @test_util.run_v1_only("_as_tf_output not supported when eager execution "
+                         "is enabled.")
   def testImportGraphWithFunctionTwice(self):
     g = ops.Graph()
     with g.as_default():

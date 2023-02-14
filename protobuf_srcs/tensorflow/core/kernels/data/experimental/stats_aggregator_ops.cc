@@ -49,7 +49,7 @@ class StatsAggregatorImpl : public StatsAggregator {
   StatsAggregatorImpl() {}
 
   void AddToHistogram(const string& name, gtl::ArraySlice<double> values,
-                      const int64 steps) override {
+                      const int64_t steps) override {
     mutex_lock l(mu_);
     histogram::Histogram& histogram = histograms_[name];
     for (double value : values) {
@@ -57,7 +57,8 @@ class StatsAggregatorImpl : public StatsAggregator {
     }
   }
 
-  void AddScalar(const string& name, float value, const int64 steps) override {
+  void AddScalar(const string& name, float value,
+                 const int64_t steps) override {
     mutex_lock l(mu_);
     scalars_[name] = value;
   }
@@ -84,11 +85,11 @@ class StatsAggregatorImpl : public StatsAggregator {
   // in V1.
   Status SetSummaryWriter(
       SummaryWriterInterface* summary_writer_interface) override {
-    return Status::OK();
+    return OkStatus();
   }
 
   void IncrementCounter(const string& name, const string& label,
-                        int64 val) override {
+                        int64_t val) override {
     mutex_lock l(*get_counters_map_lock());
     auto counters_map = get_counters_map();
     if (counters_map->find(name) == counters_map->end()) {
@@ -105,8 +106,9 @@ class StatsAggregatorImpl : public StatsAggregator {
 
  private:
   mutex mu_;
-  std::unordered_map<string, histogram::Histogram> histograms_ GUARDED_BY(mu_);
-  std::unordered_map<string, float> scalars_ GUARDED_BY(mu_);
+  std::unordered_map<string, histogram::Histogram> histograms_
+      TF_GUARDED_BY(mu_);
+  std::unordered_map<string, float> scalars_ TF_GUARDED_BY(mu_);
   TF_DISALLOW_COPY_AND_ASSIGN(StatsAggregatorImpl);
 };
 
@@ -118,10 +120,9 @@ class StatsAggregatorHandleOp
 
  private:
   Status CreateResource(StatsAggregatorResource** ret) override
-      EXCLUSIVE_LOCKS_REQUIRED(mu_) {
-    *ret =
-        new StatsAggregatorResource(absl::make_unique<StatsAggregatorImpl>());
-    return Status::OK();
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+    *ret = new StatsAggregatorResource(std::make_unique<StatsAggregatorImpl>());
+    return OkStatus();
   }
 };
 
@@ -136,7 +137,7 @@ class StatsAggregatorImplV2 : public StatsAggregator {
   }
 
   void AddToHistogram(const string& name, gtl::ArraySlice<double> values,
-                      const int64 steps) override {
+                      const int64_t steps) override {
     mutex_lock l(mu_);
     histogram::Histogram& histogram = histograms_[name];
     for (double value : values) {
@@ -145,7 +146,8 @@ class StatsAggregatorImplV2 : public StatsAggregator {
     AddToEvents(name, steps, histogram);
   }
 
-  void AddScalar(const string& name, float value, const int64 steps) override {
+  void AddScalar(const string& name, float value,
+                 const int64_t steps) override {
     mutex_lock l(mu_);
     AddToEvents(name, steps, value);
   }
@@ -155,11 +157,11 @@ class StatsAggregatorImplV2 : public StatsAggregator {
     mutex_lock l(mu_);
     if (summary_writer_interface_)
       TF_RETURN_IF_ERROR(summary_writer_interface_->Flush());
-    return Status::OK();
+    return OkStatus();
   }
 
   void IncrementCounter(const string& name, const string& label,
-                        int64 val) override {
+                        int64_t val) override {
     mutex_lock l(*get_counters_map_lock());
     auto counters_map = get_counters_map();
     if (counters_map->find(name) == counters_map->end()) {
@@ -185,24 +187,23 @@ class StatsAggregatorImplV2 : public StatsAggregator {
       // If we create stats_aggregator twice in a program, we would end up with
       // already existing resource. In this case emitting an error if a
       // `summary_writer_resource` is present is not the intended behavior, we
-      // could either Unref the existing sumary_writer_resource or not set the
+      // could either Unref the existing summary_writer_resource or not set the
       // new resource at all.
     }
     summary_writer_interface_ = summary_writer_interface;
     summary_writer_interface_->Ref();
-    return Status::OK();
+    return OkStatus();
   }
 
  private:
-  void AddToEvents(const string& name, const int64 steps,
-                   const float scalar_value) EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+  void AddToEvents(const string& name, const int64_t steps,
+                   const float scalar_value) TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     if (summary_writer_interface_ == nullptr) {
       return;
     }
     std::unique_ptr<Event> e{new Event};
     e->set_step(steps);
-    tensorflow::Env* env = tensorflow::Env::Default();
-    e->set_wall_time(env->NowMicros() / 1.0e6);
+    e->set_wall_time(EnvTime::NowMicros() / 1.0e6);
     // maybe expose GetWallTime in SummaryWriterInterface
     Summary::Value* v = e->mutable_summary()->add_value();
     v->set_tag(name);
@@ -210,16 +211,15 @@ class StatsAggregatorImplV2 : public StatsAggregator {
     TF_CHECK_OK(summary_writer_interface_->WriteEvent(std::move(e)));
   }
 
-  void AddToEvents(const string& name, const int64 steps,
+  void AddToEvents(const string& name, const int64_t steps,
                    const histogram::Histogram& histogram)
-      EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     if (summary_writer_interface_ == nullptr) {
       return;
     }
     std::unique_ptr<Event> e{new Event};
     e->set_step(steps);
-    tensorflow::Env* env = tensorflow::Env::Default();
-    e->set_wall_time(env->NowMicros() / 1.0e6);
+    e->set_wall_time(EnvTime::NowMicros() / 1.0e6);
     Summary::Value* v = e->mutable_summary()->add_value();
     v->set_tag(name);
     histogram.EncodeToProto(v->mutable_histo(), false /* Drop zero buckets */);
@@ -227,10 +227,12 @@ class StatsAggregatorImplV2 : public StatsAggregator {
   }
 
   mutex mu_;
-  SummaryWriterInterface* summary_writer_interface_ GUARDED_BY(mu_) = nullptr;
+  SummaryWriterInterface* summary_writer_interface_ TF_GUARDED_BY(mu_) =
+      nullptr;
   // not owned, we might be associating the default summary_writer from the
   // context
-  std::unordered_map<string, histogram::Histogram> histograms_ GUARDED_BY(mu_);
+  std::unordered_map<string, histogram::Histogram> histograms_
+      TF_GUARDED_BY(mu_);
   TF_DISALLOW_COPY_AND_ASSIGN(StatsAggregatorImplV2);
 };
 
@@ -242,10 +244,10 @@ class StatsAggregatorHandleOpV2
 
  private:
   Status CreateResource(StatsAggregatorResource** ret) override
-      EXCLUSIVE_LOCKS_REQUIRED(mu_) {
+      TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     *ret =
-        new StatsAggregatorResource(absl::make_unique<StatsAggregatorImplV2>());
-    return Status::OK();
+        new StatsAggregatorResource(std::make_unique<StatsAggregatorImplV2>());
+    return OkStatus();
   }
 };
 
@@ -289,11 +291,11 @@ class StatsAggregatorSetSummaryWriterOp : public OpKernel {
     OP_REQUIRES(ctx,
                 TensorShapeUtils::IsScalar(summary_resource_handle_t.shape()),
                 errors::InvalidArgument("resource_handle must be a scalar"));
-    core::RefCountPtr<SummaryWriterInterface> sumamry_resource;
+    core::RefCountPtr<SummaryWriterInterface> summary_resource;
     OP_REQUIRES_OK(
-        ctx, LookupResource(ctx, HandleFromInput(ctx, 1), &sumamry_resource));
+        ctx, LookupResource(ctx, HandleFromInput(ctx, 1), &summary_resource));
     TF_CHECK_OK(
-        resource->stats_aggregator()->SetSummaryWriter(sumamry_resource.get()));
+        resource->stats_aggregator()->SetSummaryWriter(summary_resource.get()));
   }
 };
 

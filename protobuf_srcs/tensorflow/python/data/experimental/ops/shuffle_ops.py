@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Experimental shuffle ops."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.data.ops import dataset_ops
 from tensorflow.python.data.util import random_seed
 from tensorflow.python.framework import constant_op
@@ -96,7 +92,7 @@ def shuffle_and_repeat(buffer_size, count=None, seed=None):
       is `None` or `-1`) is for the dataset be repeated indefinitely.
     seed: (Optional.) A `tf.int64` scalar `tf.Tensor`, representing the random
       seed that will be used to create the distribution. See
-      `tf.compat.v1.set_random_seed` for behavior.
+      `tf.random.set_seed` for behavior.
 
   Returns:
     A `Dataset` transformation function, which can be passed to

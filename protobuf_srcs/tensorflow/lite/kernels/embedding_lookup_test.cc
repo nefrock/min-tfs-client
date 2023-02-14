@@ -14,17 +14,20 @@ License.
 ==============================================================================*/
 // Unit test for TFLite Lookup op.
 
+#include <stdint.h>
+
+#include <functional>
 #include <initializer_list>
-#include <iomanip>
+#include <memory>
 #include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
-#include "tensorflow/lite/interpreter.h"
+#include "tensorflow/lite/core/interpreter.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
-#include "tensorflow/lite/kernels/register.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/test_util.h"
-#include "tensorflow/lite/model.h"
+#include "tensorflow/lite/schema/schema_generated.h"
 
 namespace tflite {
 namespace {
@@ -106,7 +109,7 @@ TEST(EmbeddingLookupOpTest, SimpleTest) {
   m.Set3DWeightMatrix<float>(
       [](int i, int j, int k) -> float { return i + j / 10.0f + k / 100.0f; });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
               ElementsAreArray(ArrayFloatNear({
@@ -125,7 +128,7 @@ TEST(HybridEmbeddingLookupHybridOpTest, Simple2DTestUint8) {
       2.00, 2.01,  2.02, 2.03, 2.10, 2.11, 2.12, 2.13,  // Row 2
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
               ElementsAreArray(ArrayFloatNear(
@@ -146,7 +149,7 @@ TEST(HybridEmbeddingLookupHybridOpTest, Simple3DTestUint8) {
       2.00, 2.01,  2.02, 2.03, 2.10, 2.11, 2.12, 2.13,  // Row 2
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
               ElementsAreArray(ArrayFloatNear(
@@ -167,7 +170,7 @@ TEST(HybridEmbeddingLookupHybridOpTest, Simple4DTestUint8) {
       2.00, 2.01,  2.02, 2.03, 2.10, 2.11, 2.12, 2.13,  // Row 2
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
               ElementsAreArray(ArrayFloatNear(
@@ -188,7 +191,7 @@ TEST(HybridEmbeddingLookupHybridOpTest, Simple2DTestInt8) {
       2.00, 2.01,  2.02, 2.03, 2.10, 2.11, 2.12, 2.13,  // Row 2
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
               ElementsAreArray(ArrayFloatNear(
@@ -209,7 +212,7 @@ TEST(HybridEmbeddingLookupHybridOpTest, Simple3DTestInt8) {
       2.00, 2.01,  2.02, 2.03, 2.10, 2.11, 2.12, 2.13,  // Row 2
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
               ElementsAreArray(ArrayFloatNear(
@@ -230,7 +233,7 @@ TEST(HybridEmbeddingLookupHybridOpTest, Simple4DTestInt8) {
       2.00, 2.01,  2.02, 2.03, 2.10, 2.11, 2.12, 2.13,  // Row 2
   });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<float>(),
               ElementsAreArray(ArrayFloatNear(
@@ -248,7 +251,7 @@ TEST(EmbeddingLookupHybridOpTest, Simple3DTestQuantized) {
   m.Set3DWeightMatrix<uint8_t>(
       [](int i, int j, int k) -> uint8_t { return 100 * i + 10 * j + k; });
 
-  m.Invoke();
+  ASSERT_EQ(m.Invoke(), kTfLiteOk);
 
   EXPECT_THAT(m.GetOutput<int8_t>(),
               ElementsAreArray({

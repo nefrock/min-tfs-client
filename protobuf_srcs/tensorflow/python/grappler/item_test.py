@@ -14,10 +14,6 @@
 # ==============================================================================
 """Tests for the swig wrapper of items."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import constant_op
 from tensorflow.python.framework import dtypes
 from tensorflow.python.framework import errors_impl
@@ -109,7 +105,7 @@ class ItemTest(test.TestCase):
     self.assertEqual(new_tf_item, newest_tf_item)
 
   @test_util.run_v1_only('b/120545219')
-  def testColocationContraints(self):
+  def testColocationConstraints(self):
     with ops.Graph().as_default() as g:
       c = constant_op.constant([10])
       v = variables.VariableV1([3], dtype=dtypes.int32)

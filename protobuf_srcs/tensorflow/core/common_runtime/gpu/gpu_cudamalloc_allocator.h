@@ -18,31 +18,29 @@ limitations under the License.
 
 #include <memory>
 
-#include "tensorflow/core/common_runtime/gpu/gpu_id.h"
 #include "tensorflow/core/framework/allocator.h"
 #include "tensorflow/core/platform/macros.h"
 #include "tensorflow/core/platform/stream_executor.h"
 #include "tensorflow/core/platform/types.h"
+#include "tensorflow/tsl/framework/device_id.h"
 
 namespace tensorflow {
 
-// An allocator that wraps a GPU allocator and adds debugging
-// functionality that verifies that users do not write outside their
-// allocated memory.
+// An allocator which directly uses cuMemAlloc and cuMemFree to allocate and
+// free memory.
 class GPUcudaMallocAllocator : public Allocator {
  public:
-  explicit GPUcudaMallocAllocator(Allocator* allocator,
-                                  PlatformGpuId platform_gpu_id);
-  ~GPUcudaMallocAllocator() override;
+  explicit GPUcudaMallocAllocator(tsl::PlatformDeviceId platform_device_id);
   string Name() override { return "gpu_debug"; }
   void* AllocateRaw(size_t alignment, size_t num_bytes) override;
   void DeallocateRaw(void* ptr) override;
   bool TracksAllocationSizes() const override;
-  absl::optional<AllocatorStats> GetStats() override;
+
+  AllocatorMemoryType GetMemoryType() const override {
+    return AllocatorMemoryType::kDevice;
+  }
 
  private:
-  Allocator* base_allocator_ = nullptr;  // owned
-
   se::StreamExecutor* stream_exec_;  // Not owned.
 
   TF_DISALLOW_COPY_AND_ASSIGN(GPUcudaMallocAllocator);

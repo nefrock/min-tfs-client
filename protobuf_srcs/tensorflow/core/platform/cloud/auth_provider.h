@@ -17,8 +17,9 @@ limitations under the License.
 #define TENSORFLOW_CORE_PLATFORM_CLOUD_AUTH_PROVIDER_H_
 
 #include <string>
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/core/status.h"
+
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace tensorflow {
 
@@ -45,7 +46,7 @@ class EmptyAuthProvider : public AuthProvider {
  public:
   Status GetToken(string* token) override {
     *token = "";
-    return Status::OK();
+    return OkStatus();
   }
 };
 

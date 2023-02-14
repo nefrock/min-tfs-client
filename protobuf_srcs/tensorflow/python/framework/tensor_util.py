@@ -13,20 +13,18 @@
 # limitations under the License.
 # ==============================================================================
 """Utilities to create TensorProtos."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import numpy as np
-import six
 
 from tensorflow.core.framework import tensor_pb2
 from tensorflow.core.framework import tensor_shape_pb2
+from tensorflow.python.client import pywrap_tf_session as c_api
 from tensorflow.python.eager import context
 from tensorflow.python.framework import dtypes
+from tensorflow.python.framework import errors_impl
 from tensorflow.python.framework import ops
-from tensorflow.python.framework import tensor_like
 from tensorflow.python.framework import tensor_shape
+from tensorflow.python.types import core
+from tensorflow.python.types import internal
 from tensorflow.python.util import compat
 from tensorflow.python.util import nest
 from tensorflow.python.util.tf_export import tf_export
@@ -103,18 +101,18 @@ if _FAST_TENSOR_UTIL_AVAILABLE:
           fast_tensor_util.AppendComplex64ArrayToTensorProto,
       np.complex128:
           fast_tensor_util.AppendComplex128ArrayToTensorProto,
-      np.object:
+      np.object_:
           fast_tensor_util.AppendObjectArrayToTensorProto,
-      np.bool:
+      np.bool_:
           fast_tensor_util.AppendBoolArrayToTensorProto,
       dtypes.qint8.as_numpy_dtype:
           fast_tensor_util.AppendInt8ArrayToTensorProto,
       dtypes.quint8.as_numpy_dtype:
           fast_tensor_util.AppendUInt8ArrayToTensorProto,
       dtypes.qint16.as_numpy_dtype:
-          fast_tensor_util.AppendInt8ArrayToTensorProto,
+          fast_tensor_util.AppendInt16ArrayToTensorProto,
       dtypes.quint16.as_numpy_dtype:
-          fast_tensor_util.AppendUInt8ArrayToTensorProto,
+          fast_tensor_util.AppendUInt16ArrayToTensorProto,
       dtypes.qint32.as_numpy_dtype:
           fast_tensor_util.AppendInt32ArrayToTensorProto,
       # NOTE(touts): Intentionally no way to feed a DT_BFLOAT16.
@@ -171,8 +169,8 @@ else:
       np.int16: SlowAppendIntArrayToTensorProto,
       np.complex64: SlowAppendComplex64ArrayToTensorProto,
       np.complex128: SlowAppendComplex128ArrayToTensorProto,
-      np.object: SlowAppendObjectArrayToTensorProto,
-      np.bool: SlowAppendBoolArrayToTensorProto,
+      np.object_: SlowAppendObjectArrayToTensorProto,
+      np.bool_: SlowAppendBoolArrayToTensorProto,
       dtypes.qint8.as_numpy_dtype: SlowAppendQIntArrayToTensorProto,
       dtypes.quint8.as_numpy_dtype: SlowAppendQIntArrayToTensorProto,
       dtypes.qint16.as_numpy_dtype: SlowAppendQIntArrayToTensorProto,
@@ -184,7 +182,7 @@ else:
 
 def GetFromNumpyDTypeDict(dtype_dict, dtype):
   # NOTE: dtype_dict.get(dtype) always returns None.
-  for key, val in six.iteritems(dtype_dict):
+  for key, val in dtype_dict.items():
     if key == dtype:
       return val
   return None
@@ -195,7 +193,7 @@ def GetNumpyAppendFn(dtype):
   # dtype with a single constant (np.string does not exist) to decide
   # dtype is a "string" type. We need to compare the dtype.type to be
   # sure it's a string type.
-  if dtype.type == np.string_ or dtype.type == np.unicode_:
+  if dtype.type == np.bytes_ or dtype.type == np.str_:
     if _FAST_TENSOR_UTIL_AVAILABLE:
       return fast_tensor_util.AppendObjectArrayToTensorProto
     else:
@@ -235,9 +233,9 @@ def _FlattenToStrings(nested_strings):
 
 
 _TENSOR_CONTENT_TYPES = frozenset([
-    dtypes.float32, dtypes.float64, dtypes.int32, dtypes.uint8, dtypes.int16,
-    dtypes.int8, dtypes.int64, dtypes.qint8, dtypes.quint8, dtypes.qint16,
-    dtypes.quint16, dtypes.qint32, dtypes.uint32, dtypes.uint64
+    dtypes.float16, dtypes.float32, dtypes.float64, dtypes.int32, dtypes.uint8,
+    dtypes.int16, dtypes.int8, dtypes.int64, dtypes.qint8, dtypes.quint8,
+    dtypes.qint16, dtypes.quint16, dtypes.qint32, dtypes.uint32, dtypes.uint64
 ])
 
 
@@ -260,8 +258,12 @@ def _check_quantized(values):
 
 def _generate_isinstance_check(expected_types):
   def inner(values):
-    _ = [_check_failed(v) for v in nest.flatten(values)
-         if not isinstance(v, expected_types)]
+    for v in nest.flatten(values):
+      if not (isinstance(v, expected_types) or
+              (isinstance(v, np.ndarray) and
+               issubclass(v.dtype.type, expected_types))):
+        _check_failed(v)
+
   return inner
 
 _check_int = _generate_isinstance_check(
@@ -325,10 +327,10 @@ def _AssertCompatible(values, dtype):
   except ValueError as e:
     [mismatch] = e.args
     if dtype is None:
-      raise TypeError("List of Tensors when single Tensor expected")
+      raise TypeError("Expected any non-tensor type, but got a tensor instead.")
     else:
-      raise TypeError("Expected %s, got %s of type '%s' instead." %
-                      (dtype.name, repr(mismatch), type(mismatch).__name__))
+      raise TypeError(f"Expected {dtype.name}, but got {mismatch} of type "
+                      f"'{type(mismatch).__name__}'.")
 
 
 def _is_array_like(obj):  # pylint: disable=invalid-name
@@ -454,10 +456,9 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
       # We need to pass in quantized values as tuples, so don't apply the shape
       if (list(nparray.shape) != _GetDenseDimensions(values) and
           not is_quantized):
-        raise ValueError("""Argument must be a dense tensor: %s"""
-                         """ - got shape %s, but wanted %s.""" %
-                         (values, list(nparray.shape),
-                          _GetDenseDimensions(values)))
+        raise ValueError(f"Expected values {values} to be a dense tensor with "
+                         f"shape {_GetDenseDimensions(values)}, but got shape "
+                         f"{list(nparray.shape)}.")
 
     # python/numpy default float type is float64. We prefer float32 instead.
     if (nparray.dtype == np.float64) and dtype is None:
@@ -473,7 +474,7 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
   # conversion says.
   numpy_dtype = dtypes.as_dtype(nparray.dtype)
   if numpy_dtype is None:
-    raise TypeError("Unrecognized data type: %s" % nparray.dtype)
+    raise TypeError(f"Unrecognized data type: {nparray.dtype}.")
 
   # If dtype was specified and is a quantized type, we convert
   # numpy_dtype back into the quantized version.
@@ -482,8 +483,8 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
 
   if dtype is not None and (not hasattr(dtype, "base_dtype") or
                             dtype.base_dtype != numpy_dtype.base_dtype):
-    raise TypeError("Incompatible types: %s vs. %s. Value is %s" %
-                    (dtype, nparray.dtype, values))
+    raise TypeError(f"`dtype` {dtype} is not compatible with {values} of "
+                    f"dtype {nparray.dtype}.")
 
   # If shape is not given, get the shape from the numpy array.
   if shape is None:
@@ -499,18 +500,17 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
       if nparray.shape == (1,) or nparray.shape == tuple():
         pass
       elif nparray.size != shape_size:
-        raise TypeError("Expected Tensor's shape: %s, got %s." %
-                        (tuple(shape), nparray.shape))
+        raise TypeError(f"Expected Tensor's shape: {tuple(shape)}, but got "
+                        f"{nparray.shape}.")
 
     else:
       if verify_shape and nparray.shape != tuple(shape):
-        raise TypeError("Expected Tensor's shape: %s, got %s." %
-                        (tuple(shape), nparray.shape))
+        raise TypeError(f"Expected Tensor's shape: {tuple(shape)}, but got "
+                        f"{nparray.shape}.")
 
       if nparray.size > shape_size:
-        raise ValueError(
-            "Too many elements provided. Needed at most %d, but received %d" %
-            (shape_size, nparray.size))
+        raise ValueError("Too many elements provided. Takes at most "
+                         f"{shape_size:d}, but got {nparray.size:d}.")
 
   tensor_proto = tensor_pb2.TensorProto(
       dtype=numpy_dtype.as_datatype_enum,
@@ -520,7 +520,7 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
     if nparray.size * nparray.itemsize >= (1 << 31):
       raise ValueError(
           "Cannot create a tensor proto whose content is larger than 2GB.")
-    tensor_proto.tensor_content = nparray.tostring()
+    tensor_proto.tensor_content = nparray.tobytes()
     return tensor_proto
 
   # If we were not given values as a numpy array, compute the proto_values
@@ -533,7 +533,7 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
 
     # At this point, values may be a list of objects that we could not
     # identify a common type for (hence it was inferred as
-    # np.object/dtypes.string).  If we are unable to convert it to a
+    # np.object_/dtypes.string).  If we are unable to convert it to a
     # string, we raise a more helpful error message.
     #
     # Ideally, we'd be able to convert the elements of the list to a
@@ -542,9 +542,10 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
     try:
       str_values = [compat.as_bytes(x) for x in proto_values]
     except TypeError:
-      raise TypeError("Failed to convert object of type %s to Tensor. "
-                      "Contents: %s. Consider casting elements to a "
-                      "supported type." % (type(values), values))
+      raise TypeError(f"Failed to convert elements of {values} to Tensor. "
+                      "Consider casting elements to a supported type. See "
+                      "https://www.tensorflow.org/api_docs/python/tf/dtypes "
+                      "for supported TF dtypes.")
     tensor_proto.string_val.extend(str_values)
     return tensor_proto
 
@@ -554,7 +555,7 @@ def make_tensor_proto(values, dtype=None, shape=None, verify_shape=False,
   append_fn = GetNumpyAppendFn(proto_values.dtype)
   if append_fn is None:
     raise TypeError(
-        "Element type not supported in TensorProto: %s" % numpy_dtype.name)
+        f"Element type not supported in TensorProto: {numpy_dtype.name}.")
   append_fn(tensor_proto, proto_values)
 
   return tensor_proto
@@ -566,9 +567,9 @@ def MakeNdarray(tensor):
   """Create a numpy ndarray from a tensor.
 
   Create a numpy ndarray with the same shape and data as the tensor.
-  
+
   For example:
-  
+
   ```python
   # Tensor a has shape (2,3)
   a = tf.constant([[1,2,3],[4,5,6]])
@@ -598,7 +599,7 @@ def MakeNdarray(tensor):
                           dtype=dtype).copy().reshape(shape))
 
   if tensor_dtype == dtypes.string:
-    # np.pad throws on these arrays of type np.object.
+    # np.pad throws on these arrays of type np.object_.
     values = list(tensor.string_val)
     padding = num_elements - len(values)
     if padding > 0:
@@ -622,6 +623,10 @@ def MakeNdarray(tensor):
     values = np.fromiter(tensor.int_val, dtype=dtype)
   elif tensor_dtype == dtypes.int64:
     values = np.fromiter(tensor.int64_val, dtype=dtype)
+  elif tensor_dtype == dtypes.uint32:
+    values = np.fromiter(tensor.uint32_val, dtype=dtype)
+  elif tensor_dtype == dtypes.uint64:
+    values = np.fromiter(tensor.uint64_val, dtype=dtype)
   elif tensor_dtype == dtypes.complex64:
     it = iter(tensor.scomplex_val)
     values = np.array([complex(x[0], x[1]) for x in zip(it, it)], dtype=dtype)
@@ -631,7 +636,9 @@ def MakeNdarray(tensor):
   elif tensor_dtype == dtypes.bool:
     values = np.fromiter(tensor.bool_val, dtype=dtype)
   else:
-    raise TypeError("Unsupported tensor type: %s" % tensor.dtype)
+    raise TypeError(f"Unsupported tensor type: {tensor.dtype}. See "
+                    "https://www.tensorflow.org/api_docs/python/tf/dtypes "
+                    "for supported TF dtypes.")
 
   if values.size == 0:
     return np.zeros(shape, dtype)
@@ -657,11 +664,13 @@ def ShapeEquals(tensor_proto, shape):
       TensorShape, list, or tuple.
   """
   if not isinstance(tensor_proto, tensor_pb2.TensorProto):
-    raise TypeError("tensor_proto is not a tensor_pb2.TensorProto object")
+    raise TypeError("`tensor_proto` must be a tensor_pb2.TensorProto object, "
+                    f"but got type {type(tensor_proto)}.")
   if isinstance(shape, tensor_shape_pb2.TensorShapeProto):
     shape = [d.size for d in shape.dim]
   elif not isinstance(shape, (list, tuple)):
-    raise TypeError("shape is not a list or tuple")
+    raise TypeError("`shape` must be a list or tuple, but got type "
+                    f"{type(shape)}.")
   tensor_shape_list = [d.size for d in tensor_proto.tensor_shape.dim]
   return all(x == y for x, y in zip(tensor_shape_list, shape))
 
@@ -669,7 +678,7 @@ def ShapeEquals(tensor_proto, shape):
 def _ConstantValue(tensor, partial):
   # TODO(touts): Support Variables?
   if not isinstance(tensor, ops.Tensor):
-    raise TypeError("%r is not a Tensor, has type %s" % (tensor, type(tensor)))
+    raise TypeError(f"{tensor!r} must be a Tensor, but got {type(tensor)}.")
   if tensor.op.type == "Const":
     return MakeNdarray(tensor.op.get_attr("value"))
   elif tensor.op.type == "Shape":
@@ -790,6 +799,8 @@ def _ConstantValue(tensor, partial):
     return np.not_equal(value1, value2)
   elif tensor.op.type == "StopGradient":
     return constant_value(tensor.op.inputs[0], partial)
+  elif tensor.op.type in ("CheckNumericsV2", "DebugIdentityV2", "Identity"):
+    return constant_value(tensor.op.inputs[0], partial)
   else:
     return None
 
@@ -800,6 +811,41 @@ def constant_value(tensor, partial=False):  # pylint: disable=invalid-name
 
   This function attempts to partially evaluate the given tensor, and
   returns its value as a numpy ndarray if this succeeds.
+
+  Example usage:
+
+  >>> a = tf.constant(10)
+  >>> tf.get_static_value(a)
+  10
+  >>> b = tf.constant(20)
+  >>> tf.get_static_value(tf.add(a, b))
+  30
+
+  >>> # `tf.Variable` is not supported.
+  >>> c = tf.Variable(30)
+  >>> print(tf.get_static_value(c))
+  None
+
+  Using `partial` option is most relevant when calling `get_static_value` inside
+  a `tf.function`. Setting it to `True` will return the results but for the
+  values that cannot be evaluated will be `None`. For example:
+
+  ```python
+  class Foo:
+    def __init__(self):
+      self.a = tf.Variable(1)
+      self.b = tf.constant(2)
+
+    @tf.function
+    def bar(self, partial):
+      packed = tf.raw_ops.Pack(values=[self.a, self.b])
+      static_val = tf.get_static_value(packed, partial=partial)
+      tf.print(static_val)
+
+  f = Foo()
+  f.bar(partial=True)  # `array([None, array(2, dtype=int32)], dtype=object)`
+  f.bar(partial=False)  # `None`
+  ```
 
   Compatibility(V1): If `constant_value(tensor)` returns a non-`None` result, it
   will no longer be possible to feed a different value for `tensor`. This allows
@@ -819,7 +865,12 @@ def constant_value(tensor, partial=False):  # pylint: disable=invalid-name
     TypeError: if tensor is not an ops.Tensor.
   """
   if isinstance(tensor, ops.EagerTensor):
-    return tensor.numpy()
+    try:
+      return tensor.numpy()
+    except errors_impl.UnimplementedError:
+      # Some EagerTensors may not implement .numpy/resolve, e.g. parallel
+      # tensors with multiple components on different devices.
+      return None
   if not is_tensor(tensor):
     return tensor
   if not isinstance(tensor, ops.Tensor):
@@ -852,7 +903,7 @@ def constant_value_as_shape(tensor):  # pylint: disable=invalid-name
     ValueError: If the shape is rank-0 and is not statically known to be -1.
   """
   if isinstance(tensor, ops.EagerTensor):
-    return tensor_shape.as_shape(
+    return tensor_shape.TensorShape(
         [dim if dim != -1 else None for dim in tensor.numpy()])
 
   if tensor.get_shape().ndims == 0:
@@ -863,13 +914,27 @@ def constant_value_as_shape(tensor):  # pylint: disable=invalid-name
           "known scalar with value '-1' to describe an unknown shape.")
     if value != -1:
       raise ValueError(
-          "Received a scalar value '%s' as shape; require a statically known "
-          "scalar with value '-1' to describe an unknown shape." % value)
+          f"Received a scalar value '{value}' as shape; require a statically "
+          "known scalar with value '-1' to describe an unknown shape.")
     return tensor_shape.unknown_shape()
 
   shape = tensor.get_shape().with_rank(1)
   if shape == [0]:
     return tensor_shape.TensorShape([])
+  elif tensor.op.type == "Cast":
+    pre_cast = constant_value_as_shape(tensor.op.inputs[0])
+    if pre_cast.dims is None:
+      # the input to cast has a totally undefined shape; just return that.
+      return pre_cast
+    cast_dtype = dtypes.as_dtype(tensor.op.get_attr("DstT"))
+    if cast_dtype not in (dtypes.int32, dtypes.int64):
+      return tensor_shape.unknown_shape(shape.dims[0].value)
+    dest_dtype_shape_array = np.array(
+        [x if x is not None else -1 for x in pre_cast.as_list()]).astype(
+            cast_dtype.as_numpy_dtype)
+    return tensor_shape.TensorShape([
+        x if x >= 0 else None
+        for x in dest_dtype_shape_array])
   elif tensor.op.type == "Shape":
     return tensor.op.inputs[0].get_shape()
   elif tensor.op.type == "Pack":
@@ -961,22 +1026,42 @@ def constant_value_as_shape(tensor):  # pylint: disable=invalid-name
   return ret
 
 
+# TODO(mdan): Deprecate in favor of more static-friendly types.
 @tf_export("is_tensor")
-def is_tensor(x):  # pylint: disable=invalid-name
-  """Checks whether `x` is a tensor or "tensor-like".
+def is_tf_type(x):  # pylint: disable=invalid-name
+  """Checks whether `x` is a TF-native type that can be passed to many TF ops.
 
-  If `is_tensor(x)` returns `True`, it is safe to assume that `x` is a tensor or
-  can be converted to a tensor using `ops.convert_to_tensor(x)`.
+  Use `is_tensor` to differentiate types that can ingested by TensorFlow ops
+  without any conversion (e.g., `tf.Tensor`, `tf.SparseTensor`, and
+  `tf.RaggedTensor`) from types that need to be converted into tensors before
+  they are ingested (e.g., numpy `ndarray` and Python scalars).
+
+  For example, in the following code block:
+
+  ```python
+  if not tf.is_tensor(t):
+    t = tf.convert_to_tensor(t)
+  return t.shape, t.dtype
+  ```
+
+  we check to make sure that `t` is a tensor (and convert it if not) before
+  accessing its `shape` and `dtype`.  (But note that not all TensorFlow native
+  types have shapes or dtypes; `tf.data.Dataset` is an example of a TensorFlow
+  native type that has neither shape nor dtype.)
 
   Args:
     x: A python object to check.
 
   Returns:
-    `True` if `x` is a tensor or "tensor-like", `False` if not.
+    `True` if `x` is a TensorFlow-native type.
   """
-  return (isinstance(x, tensor_like._TensorLike) or  # pylint: disable=protected-access
-          ops.is_dense_tensor_like(x) or
+  return (isinstance(x, internal.NativeObject) or
+          isinstance(x, core.Tensor) or
           getattr(x, "is_tensor_like", False))
+
+
+# Deprecated alias for tensor_util.is_tf_type.
+is_tensor = is_tf_type
 
 
 def shape_tensor(shape):  # pylint: disable=invalid-name
@@ -989,7 +1074,7 @@ def shape_tensor(shape):  # pylint: disable=invalid-name
       # If there are Dimension objects in the shape, unwrap them. This can be a
       # problem if v1 and v2 TensorShape objects get mixed up in partial
       # conversions, leading to shapes such as (1, 2, Dimension(5)), which are
-      # not convertible to Tensors becasue of mixed content.
+      # not convertible to Tensors because of mixed content.
       shape = tuple(map(tensor_shape.dimension_value, shape))
   return ops.convert_to_tensor(shape, dtype=dtype, name="shape")
 
@@ -1031,3 +1116,18 @@ def maybe_set_static_shape(tensor, shape):  # pylint: disable=invalid-name
     shape = shape_tensor(shape)
     const_shape = constant_value_as_shape(shape)
     tensor.set_shape(const_shape)
+
+
+def try_evaluate_constant(tensor):  # pylint: disable=invalid-name
+  """Evaluates a symbolic tensor as a constant.
+
+  Args:
+    tensor: a symbolic Tensor.
+
+  Returns:
+    ndarray if the evaluation succeeds, or None if it fails.
+  """
+  # pylint: disable=protected-access
+  with tensor.graph._c_graph.get() as c_graph:
+    return c_api.TF_TryEvaluateConstant_wrapper(c_graph, tensor._as_tf_output())
+  # pylint: enable=protected-access

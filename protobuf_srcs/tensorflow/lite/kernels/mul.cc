@@ -14,16 +14,26 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/kernels/internal/optimized/integer_ops/mul.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
+#include <complex>
+
 #include "tensorflow/lite/c/builtin_op_data.h"
-#include "tensorflow/lite/c/c_api_internal.h"
+#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/kernels/internal/compatibility.h"
 #include "tensorflow/lite/kernels/internal/optimized/cpu_check.h"
+#include "tensorflow/lite/kernels/internal/optimized/neon_check.h"
 #include "tensorflow/lite/kernels/internal/optimized/optimized_ops.h"
 #include "tensorflow/lite/kernels/internal/quantization_util.h"
 #include "tensorflow/lite/kernels/internal/reference/integer_ops/mul.h"
+#include "tensorflow/lite/kernels/internal/reference/mul.h"
+#include "tensorflow/lite/kernels/internal/reference/process_broadcast_shapes.h"
 #include "tensorflow/lite/kernels/internal/reference/reference_ops.h"
 #include "tensorflow/lite/kernels/internal/tensor.h"
+#include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
+#include "tensorflow/lite/kernels/internal/types.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
-#include "tensorflow/lite/kernels/op_macros.h"
 
 namespace tflite {
 namespace ops {
@@ -67,11 +77,17 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, NumInputs(node), 2);
   TF_LITE_ENSURE_EQ(context, NumOutputs(node), 1);
 
-  const TfLiteTensor* input1 = GetInput(context, node, kInputTensor1);
-  const TfLiteTensor* input2 = GetInput(context, node, kInputTensor2);
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
+  const TfLiteTensor* input1;
+  TF_LITE_ENSURE_OK(context,
+                    GetInputSafe(context, node, kInputTensor1, &input1));
+  const TfLiteTensor* input2;
+  TF_LITE_ENSURE_OK(context,
+                    GetInputSafe(context, node, kInputTensor2, &input2));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
 
-  TF_LITE_ENSURE_EQ(context, input1->type, input2->type);
+  TF_LITE_ENSURE_TYPES_EQ(context, input1->type, input2->type);
 
   const bool requires_broadcast = !HaveSameShapes(input1, input2);
 
@@ -83,19 +99,11 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
     output_size = TfLiteIntArrayCopy(input1->dims);
   }
 
-  if (output->type == kTfLiteUInt8) {
-    CalculateActivationRangeUint8(params->activation, output,
-                                  &data->output_activation_min,
-                                  &data->output_activation_max);
-  }
-  if (output->type == kTfLiteInt8) {
-    CalculateActivationRangeInt8(params->activation, output,
-                                 &data->output_activation_min,
-                                 &data->output_activation_max);
-  }
-
   if (output->type == kTfLiteUInt8 || output->type == kTfLiteInt8 ||
       output->type == kTfLiteInt16) {
+    TF_LITE_ENSURE_STATUS(CalculateActivationRangeQuantized(
+        context, params->activation, output, &data->output_activation_min,
+        &data->output_activation_max));
     double real_multiplier =
         input1->params.scale * input2->params.scale / output->params.scale;
     QuantizeMultiplier(real_multiplier, &data->output_multiplier,
@@ -151,8 +159,28 @@ void EvalMul(TfLiteContext* context, TfLiteNode* node, TfLiteMulParams* params,
         TF_LITE_MUL(optimized_ops, Mul, float);
       }
     }
-  }
+  } else if (output->type == kTfLiteInt64) {
+    if (need_broadcast) {
+      TF_LITE_MUL(reference_ops, BroadcastMul4DSlow, int64_t);
+    } else {
+      TF_LITE_MUL(reference_ops, Mul, int64_t);
+    }
 #undef TF_LITE_MUL
+  } else if (output->type == kTfLiteComplex64) {
+#define TF_LITE_MUL_COMPLEX(op_name)                                      \
+  reference_ops::op_name(                                                 \
+      op_params, GetTensorShape(input1),                                  \
+      GetTensorData<std::complex<float>>(input1), GetTensorShape(input2), \
+      GetTensorData<std::complex<float>>(input2), GetTensorShape(output), \
+      GetTensorData<std::complex<float>>(output));
+
+    if (need_broadcast) {
+      TF_LITE_MUL_COMPLEX(BroadcastMul4DSlow);
+    } else {
+      TF_LITE_MUL_COMPLEX(Mul);
+    }
+#undef TF_LITE_MUL_COMPLEX
+  }
 }
 
 template <KernelType kernel_type>
@@ -161,7 +189,8 @@ TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
                            const TfLiteTensor* input1,
                            const TfLiteTensor* input2, TfLiteTensor* output) {
   if (input1->type == input2->type && input1->type == output->type &&
-      (input1->type == kTfLiteUInt8 || input1->type == kTfLiteInt8)) {
+      (input1->type == kTfLiteUInt8 || input1->type == kTfLiteInt8 ||
+       input1->type == kTfLiteInt16)) {
     tflite::ArithmeticParams op_params;
     SetActivationParams(data->output_activation_min,
                         data->output_activation_max, &op_params);
@@ -191,6 +220,22 @@ TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
           TF_LITE_MUL(optimized_integer_ops, Mul, int8_t);
         }
       }
+    } else if (input1->type == kTfLiteInt16) {
+      // We have this check, because in case of int16
+      // input1_val*input2_val can overflow int32:
+      // see MulElementwise -
+      // tensorflow/lite/kernels/internal/reference/integer_ops/mul.h in case of
+      // 16-bit this function is used in symmetric quantization, so offset
+      // should be zero.
+      TF_LITE_ENSURE_EQ(context, op_params.input1_offset, 0.0);
+      TF_LITE_ENSURE_EQ(context, op_params.input2_offset, 0.0);
+      TF_LITE_ENSURE_EQ(context, op_params.output_offset, 0.0);
+
+      if (need_broadcast) {
+        TF_LITE_MUL(reference_integer_ops, BroadcastMul4DSlow, int16_t);
+      } else {
+        TF_LITE_MUL(reference_integer_ops, Mul, int16_t);
+      }
     } else {
       // type == kTfLiteUInt8
       if (kernel_type == kReference) {
@@ -206,20 +251,6 @@ TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
           TF_LITE_MUL(optimized_ops, Mul, uint8_t);
         }
       }
-    }
-#undef TF_LITE_MUL
-  } else if (input1->type == kTfLiteInt16 && input2->type == kTfLiteInt16 &&
-             output->type == kTfLiteInt16) {
-#define TF_LITE_MUL(type, opname)                                      \
-  tflite::ArithmeticParams op_params;                                  \
-  type::opname(op_params, GetTensorShape(input1),                      \
-               GetTensorData<int16_t>(input1), GetTensorShape(input2), \
-               GetTensorData<int16_t>(input2), GetTensorShape(output), \
-               GetTensorData<int16_t>(output))
-    if (kernel_type == kReference) {
-      TF_LITE_MUL(reference_ops, Mul);
-    } else {
-      TF_LITE_MUL(optimized_ops, Mul);
     }
 #undef TF_LITE_MUL
   } else if (input1->type == kTfLiteInt16 && input2->type == kTfLiteInt16 &&
@@ -244,7 +275,7 @@ TfLiteStatus EvalQuantized(TfLiteContext* context, TfLiteNode* node,
     }
 #undef TF_LITE_MUL
   } else {
-    context->ReportError(
+    TF_LITE_KERNEL_LOG(
         context, "Unsupported combination of input and output types in Mul.");
     return kTfLiteError;
   }
@@ -256,11 +287,22 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
   auto* params = reinterpret_cast<TfLiteMulParams*>(node->builtin_data);
   OpData* data = reinterpret_cast<OpData*>(node->user_data);
 
-  const TfLiteTensor* input1 = GetInput(context, node, kInputTensor1);
-  const TfLiteTensor* input2 = GetInput(context, node, kInputTensor2);
-  TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
-
-  if (output->type == kTfLiteFloat32 || output->type == kTfLiteInt32) {
+  const TfLiteTensor* input1;
+  TF_LITE_ENSURE_OK(context,
+                    GetInputSafe(context, node, kInputTensor1, &input1));
+  const TfLiteTensor* input2;
+  TF_LITE_ENSURE_OK(context,
+                    GetInputSafe(context, node, kInputTensor2, &input2));
+  TfLiteTensor* output;
+  TF_LITE_ENSURE_OK(context,
+                    GetOutputSafe(context, node, kOutputTensor, &output));
+  if (output->type == kTfLiteComplex64 && params->activation) {
+    TF_LITE_KERNEL_LOG(context,
+                       "Activation is not allowed for COMPLEX64 input.");
+    return kTfLiteError;
+  }
+  if (output->type == kTfLiteFloat32 || output->type == kTfLiteInt32 ||
+      output->type == kTfLiteInt64 || output->type == kTfLiteComplex64) {
     EvalMul<kernel_type>(context, node, params, data, input1, input2, output);
   } else if (output->type == kTfLiteUInt8 || output->type == kTfLiteInt8 ||
              output->type == kTfLiteInt16) {
@@ -268,10 +310,9 @@ TfLiteStatus Eval(TfLiteContext* context, TfLiteNode* node) {
         context, EvalQuantized<kernel_type>(context, node, params, data, input1,
                                             input2, output));
   } else {
-    context->ReportError(context,
-                         "Mul only supports FLOAT32, INT32 and quantized UINT8,"
-                         " INT8 and INT16 now, got %d.",
-                         output->type);
+    TF_LITE_KERNEL_LOG(
+        context, "Mul only supports FLOAT32, COMPLEX32, INT8, INT16,",
+        " INT32, INT64 and quantized UINT8 now, got %d.", output->type);
     return kTfLiteError;
   }
 

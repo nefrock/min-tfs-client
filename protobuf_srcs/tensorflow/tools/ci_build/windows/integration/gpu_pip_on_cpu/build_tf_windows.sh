@@ -188,9 +188,6 @@ N_JOBS="${NUMBER_OF_PROCESSORS}"
 
 # Define no_tensorflow_py_deps=true so that every py_test has no deps anymore,
 # which will result testing system installed tensorflow
-# TODO(pcloudy): remove --experimental_windows_native_test_wrapper once
-# native test wrapper is enabled by default.
-# https://github.com/bazelbuild/bazel/issues/6622
 bazel test --announce_rc --config=opt -k --test_output=errors \
   ${EXTRA_TEST_FLAGS} \
   --define=no_tensorflow_py_deps=true --test_lang_filters=py \
@@ -201,4 +198,4 @@ bazel test --announce_rc --config=opt -k --test_output=errors \
   --flaky_test_attempts=3 \
   --output_filter=^$ \
   -- ${TEST_TARGET} \
-  -//${PY_TEST_DIR}/tensorflow/python:virtual_gpu_test
+  -//${PY_TEST_DIR}/tensorflow/python/client:virtual_gpu_test

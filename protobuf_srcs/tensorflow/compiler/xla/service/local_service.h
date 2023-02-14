@@ -17,6 +17,7 @@ limitations under the License.
 #define TENSORFLOW_COMPILER_XLA_SERVICE_LOCAL_SERVICE_H_
 
 #include <memory>
+#include <vector>
 
 #include "absl/types/span.h"
 #include "tensorflow/compiler/xla/client/executable_build_options.h"
@@ -27,9 +28,9 @@ limitations under the License.
 #include "tensorflow/compiler/xla/service/service.h"
 #include "tensorflow/compiler/xla/service/shaped_buffer.h"
 #include "tensorflow/compiler/xla/statusor.h"
+#include "tensorflow/compiler/xla/stream_executor/device_memory_allocator.h"
+#include "tensorflow/compiler/xla/stream_executor/stream_executor.h"
 #include "tensorflow/compiler/xla/xla_data.pb.h"
-#include "tensorflow/core/platform/stream_executor_no_cuda.h"
-#include "tensorflow/stream_executor/device_memory_allocator.h"
 
 namespace xla {
 
@@ -41,15 +42,23 @@ class LocalService : public Service {
   static StatusOr<std::unique_ptr<LocalService>> NewService(
       const ServiceOptions& options);
 
-  // Builds an Executable with the given XlaComputation, argument layouts and
+  // Builds Executables with the given XlaComputation, argument layouts and
   // options. If result_layout is non-null, then the executable is compiled to
   // produce a result of the given layout.  If device_allocator is non-null,
   // then the compiler may use it to allocate temp space on the device.  The
   // compiler is responsible for freeing any memory it allocates this way.
-  StatusOr<std::unique_ptr<Executable>> CompileExecutable(
+  StatusOr<std::vector<std::unique_ptr<Executable>>> CompileExecutables(
       const XlaComputation& computation,
       const absl::Span<const Shape* const> argument_layouts,
       const ExecutableBuildOptions& build_options);
+
+  // Same as CompileExecutables() above, but return AotCompilationResult objects
+  // (instead of Executable objects), which can be persisted to later load
+  // Executable objects.
+  StatusOr<std::vector<std::unique_ptr<AotCompilationResult>>>
+  CompileAotResults(const XlaComputation& computation,
+                    const absl::Span<const Shape* const> argument_layouts,
+                    const ExecutableBuildOptions& build_options);
 
   // Returns the device ordinal that corresponds to the given replica number.
   //
@@ -66,13 +75,21 @@ class LocalService : public Service {
   // Registers a vector of shaped buffers of device memory, one per replica, and
   // returns a corresponding handle that can be used for talking to XLA clients.
   StatusOr<GlobalDataHandle> RegisterReplicatedBuffers(
-      std::vector<ScopedShapedBuffer> replicated_buffers, const string& tag);
+      std::vector<ScopedShapedBuffer> replicated_buffers,
+      const std::string& tag);
 
  private:
   explicit LocalService(const ServiceOptions& options,
                         std::unique_ptr<Backend> backend);
   LocalService(const LocalService&) = delete;
   void operator=(const LocalService&) = delete;
+
+  // Validates the computation argument layouts, and returns the corresponding
+  // HloModuleConfig.
+  StatusOr<std::unique_ptr<HloModuleConfig>> GetHloModuleConfig(
+      const XlaComputation& computation,
+      const absl::Span<const Shape* const> argument_layouts,
+      const ExecutableBuildOptions& build_options);
 };
 
 }  // namespace xla

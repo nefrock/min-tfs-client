@@ -61,7 +61,7 @@ class TensorSliceReader {
   };
   typedef std::function<Status(const string&, Table**)> OpenTableFunction;
 
-  static const int kLoadAllShards = -1;
+  static constexpr int kLoadAllShards = -1;
   TensorSliceReader(const string& filepattern);
   TensorSliceReader(const string& filepattern, OpenTableFunction open_function);
   TensorSliceReader(const string& filepattern, OpenTableFunction open_function,
@@ -179,6 +179,22 @@ bool TensorSliceReader::CopySliceData(const string& name,
     if (!ParseProtoUnlimited(&sts, value)) {
       VLOG(1) << "Failed to parse the record for tensor " << name << ", slice "
               << slice_s.DebugString() << ": computed key = " << key;
+      return false;
+    }
+    // Ensure the TensorSlice contains the expected amount of data.
+    TensorShape shp_s;
+    Status s = slice_s.SliceTensorShape(tss->shape(), &shp_s);
+    if (!s.ok()) {
+      VLOG(1) << "Failed to slice tensor " << name << ", slice "
+              << slice_s.DebugString() << ": " << s;
+      return false;
+    }
+    if (checkpoint::TensorProtoDataSize<T>(sts.data().data()) !=
+        shp_s.num_elements()) {
+      VLOG(1) << "Tensor " << name << ", slice " << slice_s.DebugString()
+              << " had an unexpected amount of data: expected = "
+              << shp_s.num_elements() << ", got = "
+              << checkpoint::TensorProtoDataSize<T>(sts.data().data());
       return false;
     }
     CopyDataFromTensorSliceToTensorSlice(

@@ -13,10 +13,6 @@
 # limitations under the License.
 # ==============================================================================
 """Ops for boosted_trees."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from tensorflow.python.framework import ops
 from tensorflow.python.ops import array_ops
 from tensorflow.python.ops import gen_boosted_trees_ops
@@ -27,6 +23,7 @@ from tensorflow.python.ops import resources
 from tensorflow.python.ops.gen_boosted_trees_ops import boosted_trees_aggregate_stats
 from tensorflow.python.ops.gen_boosted_trees_ops import boosted_trees_bucketize
 from tensorflow.python.ops.gen_boosted_trees_ops import boosted_trees_calculate_best_feature_split as calculate_best_feature_split
+from tensorflow.python.ops.gen_boosted_trees_ops import boosted_trees_calculate_best_feature_split_v2 as calculate_best_feature_split_v2
 from tensorflow.python.ops.gen_boosted_trees_ops import boosted_trees_calculate_best_gains_per_feature as calculate_best_gains_per_feature
 from tensorflow.python.ops.gen_boosted_trees_ops import boosted_trees_center_bias as center_bias
 from tensorflow.python.ops.gen_boosted_trees_ops import boosted_trees_create_quantile_stream_resource as create_quantile_stream_resource
@@ -47,11 +44,11 @@ from tensorflow.python.ops.gen_boosted_trees_ops import boosted_trees_update_ens
 from tensorflow.python.ops.gen_boosted_trees_ops import is_boosted_trees_quantile_stream_resource_initialized as is_quantile_resource_initialized
 # pylint: enable=unused-import
 
+from tensorflow.python.trackable import resource
 from tensorflow.python.training import saver
-from tensorflow.python.training.tracking import tracking
 
 
-class PruningMode(object):
+class PruningMode:
   """Class for working with Pruning modes."""
   NO_PRUNING, PRE_PRUNING, POST_PRUNING = range(0, 3)
 
@@ -62,8 +59,9 @@ class PruningMode(object):
     if mode in cls._map:
       return cls._map[mode]
     else:
-      raise ValueError('pruning_mode mode must be one of: {}'.format(', '.join(
-          sorted(cls._map))))
+      raise ValueError(
+          'pruning_mode mode must be one of: {}. Found: {}'.format(', '.join(
+              sorted(cls._map)), mode))
 
 
 class QuantileAccumulatorSaveable(saver.BaseSaverBuilder.SaveableObject):
@@ -95,7 +93,7 @@ class QuantileAccumulatorSaveable(saver.BaseSaverBuilder.SaveableObject):
           self._resource_handle, bucket_boundaries=bucket_boundaries)
 
 
-class QuantileAccumulator(tracking.TrackableResource):
+class QuantileAccumulator(resource.TrackableResource):
   """SaveableObject implementation for QuantileAccumulator.
 
      The bucket boundaries are serialized and deserialized from checkpointing.
@@ -206,7 +204,7 @@ class _TreeEnsembleSavable(saver.BaseSaverBuilder.SaveableObject):
           tree_ensemble_serialized=restored_tensors[1])
 
 
-class TreeEnsemble(tracking.TrackableResource):
+class TreeEnsemble(resource.TrackableResource):
   """Creates TreeEnsemble resource."""
 
   def __init__(self, name, stamp_token=0, is_local=False, serialized_proto=''):

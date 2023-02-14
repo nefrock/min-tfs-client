@@ -49,9 +49,9 @@ class GRUCellBlockOp : public OpKernel {
     const Tensor* b_c_tensor = nullptr;
     OP_REQUIRES_OK(ctx, ctx->input("b_c", &b_c_tensor));
 
-    const int64 batch_size = x_tensor->dim_size(0);
-    const int64 input_size = x_tensor->dim_size(1);
-    const int64 cell_size = h_prev_tensor->dim_size(1);
+    const int64_t batch_size = x_tensor->dim_size(0);
+    const int64_t input_size = x_tensor->dim_size(1);
+    const int64_t cell_size = h_prev_tensor->dim_size(1);
 
     // Sanity checks for input shapes.
 
@@ -204,9 +204,9 @@ class GRUBlockCellGradOp : public OpKernel {
     const Tensor* d_h_tensor = nullptr;
     OP_REQUIRES_OK(ctx, ctx->input("d_h", &d_h_tensor));
 
-    const int64 batch_size = x_tensor->dim_size(0);
-    const int64 input_size = x_tensor->dim_size(1);
-    const int64 cell_size = h_prev_tensor->dim_size(1);
+    const int64_t batch_size = x_tensor->dim_size(0);
+    const int64_t input_size = x_tensor->dim_size(1);
+    const int64_t cell_size = h_prev_tensor->dim_size(1);
 
     // Sanity checks for input shapes.
 
@@ -341,11 +341,11 @@ class GRUBlockCellGradOp : public OpKernel {
                                            TensorShape({batch_size, cell_size}),
                                            &d_h_prevr_tensor));
 
-    Tensor d_x_component_1_h_prev_compenent_1;
+    Tensor d_x_component_1_h_prev_component_1;
     OP_REQUIRES_OK(ctx, ctx->allocate_temp(
                             DataTypeToEnum<T>::v(),
                             TensorShape({batch_size, input_size + cell_size}),
-                            &d_x_component_1_h_prev_compenent_1));
+                            &d_x_component_1_h_prev_component_1));
 
     Tensor d_x_component_2_h_prevr;
     OP_REQUIRES_OK(ctx, ctx->allocate_temp(
@@ -365,7 +365,7 @@ class GRUBlockCellGradOp : public OpKernel {
         d_c_bar_tensor->matrix<T>(), d_r_bar_u_bar_tensor->matrix<T>(),
         d_r_bar_tensor.matrix<T>(), d_u_bar_tensor.matrix<T>(),
         d_h_prevr_tensor.matrix<T>(),
-        d_x_component_1_h_prev_compenent_1.matrix<T>(),
+        d_x_component_1_h_prev_component_1.matrix<T>(),
         d_x_component_2_h_prevr.matrix<T>());
   }
 };

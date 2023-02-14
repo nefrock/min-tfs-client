@@ -1,4 +1,3 @@
-# Lint as: python2, python3
 # Copyright 2018 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -15,17 +14,13 @@
 # ==============================================================================
 """Tests for tf 2.0 upgrader."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import inspect
+import io
 import os
 import tempfile
 
 from absl.testing import parameterized
-import six
-import tensorflow as tf
+import tensorflow.compat.v1 as tf
 # OSS TF V2 import placeholder.
 
 from tensorflow.python.framework import test_util
@@ -40,7 +35,7 @@ from tensorflow.tools.compatibility import tf_upgrade_v2
 
 
 def get_symbol_for_name(root, name):
-  name_parts = six.ensure_str(name).split(".")
+  name_parts = name.split(".")
   symbol = root
   # Iterate starting with second item since 1st item is "tf.".
   for part in name_parts[1:]:
@@ -67,13 +62,12 @@ def get_func_and_args_from_str(call_str):
   Returns:
     (function_name, list of arg names) tuple.
   """
-  open_paren_index = six.ensure_str(call_str).find("(")
+  open_paren_index = call_str.find("(")
   close_paren_index = call_str.rfind(")")
 
-  function_name = call_str[:six.ensure_str(call_str).find("(")]
-  args = six.ensure_str(call_str[open_paren_index +
-                                 1:close_paren_index]).split(",")
-  args = [six.ensure_str(arg).split("=")[0].strip() for arg in args]
+  function_name = call_str[:call_str.find("(")]
+  args = call_str[open_paren_index + 1:close_paren_index].split(",")
+  args = [arg.split("=")[0].strip() for arg in args]
   args = [arg for arg in args if arg]  # filter out empty strings
   return function_name, args
 
@@ -98,7 +92,7 @@ class TestUpgrade(test_util.TensorFlowTestCase, parameterized.TestCase):
           _, attr = tf_decorator.unwrap(child[1])
           api_names_v2 = tf_export.get_v2_names(attr)
           for name in api_names_v2:
-            cls.v2_symbols["tf." + six.ensure_str(name)] = attr
+            cls.v2_symbols["tf." + name] = attr
 
       visitor = public_api.PublicAPIVisitor(symbol_collector)
       visitor.private_map["tf.compat"] = ["v1", "v2"]
@@ -111,17 +105,21 @@ class TestUpgrade(test_util.TensorFlowTestCase, parameterized.TestCase):
           _, attr = tf_decorator.unwrap(child[1])
           api_names_v1 = tf_export.get_v1_names(attr)
           for name in api_names_v1:
-            cls.v1_symbols["tf." + six.ensure_str(name)] = attr
+            cls.v1_symbols["tf." + name] = attr
 
       visitor = public_api.PublicAPIVisitor(symbol_collector_v1)
       visitor.private_map["tf.compat"] = ["v1", "v2"]
       traverse.traverse(tf.compat.v1, visitor)
 
-  def _upgrade(self, old_file_text, import_rename=False):
-    in_file = six.StringIO(old_file_text)
-    out_file = six.StringIO()
+  def _upgrade(self,
+               old_file_text,
+               import_rename=False,
+               upgrade_compat_v1_import=False):
+    in_file = io.StringIO(old_file_text)
+    out_file = io.StringIO()
     upgrader = ast_edits.ASTCodeUpgrader(
-        tf_upgrade_v2.TFAPIChangeSpec(import_rename))
+        tf_upgrade_v2.TFAPIChangeSpec(
+            import_rename, upgrade_compat_v1_import=upgrade_compat_v1_import))
     count, report, errors = (
         upgrader.process_opened_file("test.py", in_file,
                                      "test_out.py", out_file))
@@ -131,8 +129,8 @@ class TestUpgrade(test_util.TensorFlowTestCase, parameterized.TestCase):
     upgrader = ast_edits.ASTCodeUpgrader(tf_upgrade_v2.TFAPIChangeSpec())
     results = []
     for old_file_text in old_file_texts:
-      in_file = six.StringIO(old_file_text)
-      out_file = six.StringIO()
+      in_file = io.StringIO(old_file_text)
+      out_file = io.StringIO()
       count, report, errors = (
           upgrader.process_opened_file("test.py", in_file,
                                        "test_out.py", out_file))
@@ -142,7 +140,7 @@ class TestUpgrade(test_util.TensorFlowTestCase, parameterized.TestCase):
   def testParseError(self):
     _, report, unused_errors, unused_new_text = self._upgrade(
         "import tensorflow as tf\na + \n")
-    self.assertNotEqual(six.ensure_str(report).find("Failed to parse"), -1)
+    self.assertNotEqual(report.find("Failed to parse"), -1)
 
   def testReport(self):
     text = "tf.angle(a)\n"
@@ -150,8 +148,8 @@ class TestUpgrade(test_util.TensorFlowTestCase, parameterized.TestCase):
     # This is not a complete test, but it is a sanity test that a report
     # is generating information.
     self.assertTrue(
-        six.ensure_str(report).find("Renamed function `tf.angle` to "
-                                    "`tf.math.angle`"))
+        report.find("Renamed function `tf.angle` to "
+                    "`tf.math.angle`"))
 
   def testRename(self):
     text = "tf.conj(a)\n"
@@ -174,11 +172,13 @@ class TestUpgrade(test_util.TensorFlowTestCase, parameterized.TestCase):
         _, attr = tf_decorator.unwrap(child[1])
         api_names = tf_export.get_v1_names(attr)
         for name in api_names:
-          _, _, _, text = self._upgrade("tf." + six.ensure_str(name))
+          _, _, _, text = self._upgrade("tf." + name)
           if (text and
               not text.startswith("tf.compat.v1") and
               not text.startswith("tf.compat.v2") and
               text not in self.v2_symbols and
+              # Ignore any symbol that contains __internal__
+              "__internal__" not in text and
               # Builds currently install old version of estimator that doesn't
               # have some 2.0 symbols.
               not text.startswith("tf.estimator")):
@@ -203,9 +203,9 @@ class TestUpgrade(test_util.TensorFlowTestCase, parameterized.TestCase):
         api_names = tf_export.get_v1_names(attr)
         for name in api_names:
           if collect:
-            v1_symbols.add("tf." + six.ensure_str(name))
+            v1_symbols.add("tf." + name)
           else:
-            _, _, _, text = self._upgrade("tf." + six.ensure_str(name))
+            _, _, _, text = self._upgrade("tf." + name)
             if (text and
                 not text.startswith("tf.compat.v1") and
                 not text.startswith("tf.compat.v2") and
@@ -301,6 +301,9 @@ class TestUpgrade(test_util.TensorFlowTestCase, parameterized.TestCase):
           # 2. Convert the input to V2.
           _, _, _, text = self._upgrade(text_input)
           new_function_name, new_args = get_func_and_args_from_str(text)
+          if "__internal__" in new_function_name:
+            # Skip the tf.__internal__ and tf.keras.__internal__ API.
+            continue
           if new_function_name == "tf.compat.v1.%s" % name:
             if tf_name in keyword_renames:
               # If we rename arguments, new function must be available in 2.0.
@@ -349,9 +352,9 @@ class TestUpgrade(test_util.TensorFlowTestCase, parameterized.TestCase):
         # Skip descending and fetching contrib methods during test. These are
         # not available in the repo anymore.
         continue
-      elif six.ensure_str(method_name).startswith("*."):
+      elif method_name.startswith("*."):
         # special case for optimizer methods
-        method = six.ensure_str(method_name).replace("*", "tf.train.Optimizer")
+        method = method_name.replace("*", "tf.train.Optimizer")
       else:
         method = method_name
 
@@ -359,7 +362,7 @@ class TestUpgrade(test_util.TensorFlowTestCase, parameterized.TestCase):
       arg_spec = tf_inspect.getfullargspec(method)
       for (arg, pos) in args:
         # to deal with the self argument on methods on objects
-        if six.ensure_str(method_name).startswith("*."):
+        if method_name.startswith("*."):
           pos += 1
         self.assertEqual(arg_spec[0][pos], arg)
 
@@ -449,7 +452,7 @@ bazel-bin/tensorflow/tools/compatibility/update/generate_v2_reorders_map
       _, _, _, new_text = self._upgrade(text)
       self.assertEqual("tf.compat.v1." + ns_prefix + v + "(a, b)", new_text)
 
-  def testIntializers(self):
+  def testInitializers(self):
     initializers = [
         "zeros",
         "ones",
@@ -515,68 +518,69 @@ bazel-bin/tensorflow/tools/compatibility/update/generate_v2_reorders_map
         initializers, ns_prefix="keras.initializers")
 
   def testContribXavierInitializer(self):
-    text = "tf.contrib.layers.xavier_initializer()\n"
-    _, unused_report, unused_errors, new_text = self._upgrade(text)
-    self.assertEqual(
-        new_text,
-        "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
-        "mode=\"fan_avg\", "
-        "distribution=\"uniform\")\n",
-    )
+    for contrib_alias in ["tf.contrib.", "contrib_"]:
+      text = contrib_alias + "layers.xavier_initializer()\n"
+      _, unused_report, unused_errors, new_text = self._upgrade(text)
+      self.assertEqual(
+          new_text,
+          "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
+          "mode=\"fan_avg\", "
+          "distribution=\"uniform\")\n",
+      )
 
-    text = "slim.xavier_initializer(True or False)\n"
-    _, unused_report, unused_errors, new_text = self._upgrade(text)
-    self.assertEqual(
-        new_text,
-        "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
-        "mode=\"fan_avg\", "
-        "distribution=(\"uniform\" if True or False else "
-        "\"truncated_normal\"))\n",
-    )
+      text = "slim.xavier_initializer(True or False)\n"
+      _, unused_report, unused_errors, new_text = self._upgrade(text)
+      self.assertEqual(
+          new_text,
+          "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
+          "mode=\"fan_avg\", "
+          "distribution=(\"uniform\" if True or False else "
+          "\"truncated_normal\"))\n",
+      )
 
-    text = "slim.xavier_initializer(uniform=(True or False))\n"
-    _, unused_report, unused_errors, new_text = self._upgrade(text)
-    self.assertEqual(
-        new_text,
-        "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
-        "mode=\"fan_avg\", "
-        "distribution=(\"uniform\" if True or False else "
-        "\"truncated_normal\"))\n",
-    )
+      text = "slim.xavier_initializer(uniform=(True or False))\n"
+      _, unused_report, unused_errors, new_text = self._upgrade(text)
+      self.assertEqual(
+          new_text,
+          "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
+          "mode=\"fan_avg\", "
+          "distribution=(\"uniform\" if True or False else "
+          "\"truncated_normal\"))\n",
+      )
 
-    text = "tf.contrib.layers.xavier_initializer_conv2d(False, 12)\n"
-    _, unused_report, unused_errors, new_text = self._upgrade(text)
-    self.assertEqual(
-        new_text,
-        "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
-        "mode=\"fan_avg\", "
-        "distribution=(\"uniform\" if False else \"truncated_normal\"), "
-        "seed=12)\n",
-    )
+      text = contrib_alias + "layers.xavier_initializer_conv2d(False, 12)\n"
+      _, unused_report, unused_errors, new_text = self._upgrade(text)
+      self.assertEqual(
+          new_text,
+          "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
+          "mode=\"fan_avg\", "
+          "distribution=(\"uniform\" if False else \"truncated_normal\"), "
+          "seed=12)\n",
+      )
 
-    text = ("tf.contrib.layers.xavier_initializer_conv2d("
-            "False, 12, tf.float32)\n")
-    _, unused_report, unused_errors, new_text = self._upgrade(text)
-    self.assertEqual(
-        new_text,
-        "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
-        "mode=\"fan_avg\", "
-        "distribution=(\"uniform\" if False else \"truncated_normal\"), "
-        "seed=12, "
-        "dtype=tf.float32)\n",
-    )
+      text = (contrib_alias + "layers.xavier_initializer_conv2d("
+              "False, 12, tf.float32)\n")
+      _, unused_report, unused_errors, new_text = self._upgrade(text)
+      self.assertEqual(
+          new_text,
+          "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
+          "mode=\"fan_avg\", "
+          "distribution=(\"uniform\" if False else \"truncated_normal\"), "
+          "seed=12, "
+          "dtype=tf.float32)\n",
+      )
 
-    text = ("tf.contrib.layers.xavier_initializer("
-            "False, 12, dtypes=tf.float32)\n")
-    _, unused_report, unused_errors, new_text = self._upgrade(text)
-    self.assertEqual(
-        new_text,
-        "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
-        "mode=\"fan_avg\", "
-        "distribution=(\"uniform\" if False else \"truncated_normal\"), "
-        "seed=12, "
-        "dtypes=tf.float32)\n",
-    )
+      text = (contrib_alias + "layers.xavier_initializer("
+              "False, 12, dtypes=tf.float32)\n")
+      _, unused_report, unused_errors, new_text = self._upgrade(text)
+      self.assertEqual(
+          new_text,
+          "tf.compat.v1.keras.initializers.VarianceScaling(scale=1.0, "
+          "mode=\"fan_avg\", "
+          "distribution=(\"uniform\" if False else \"truncated_normal\"), "
+          "seed=12, "
+          "dtypes=tf.float32)\n",
+      )
 
   def testVarianceScalingInitializer(self):
     text = ("tf.contrib.layers.variance_scaling_initializer("
@@ -896,7 +900,7 @@ bazel-bin/tensorflow/tools/compatibility/update/generate_v2_reorders_map
     _, unused_report, unused_errors, new_text = self._upgrade(text)
     self.assertEqual(
         new_text,
-        "tf.nn.dropout(x, 1 - (keep_prob), name=\"foo\")\n",
+        "tf.nn.dropout(x, rate=1 - (keep_prob), name=\"foo\")\n",
     )
 
     text = "tf.nn.dropout(x, keep_prob=.4, name=\"foo\")\n"
@@ -929,7 +933,7 @@ bazel-bin/tensorflow/tools/compatibility/update/generate_v2_reorders_map
     _, unused_report, unused_errors, new_text = self._upgrade(text)
     self.assertEqual(
         new_text,
-        "tf.nn.dropout(x, 1 - (1 - func(3 + 4.)), name=\"foo\")\n",
+        "tf.nn.dropout(x, rate=1 - (1 - func(3 + 4.)), name=\"foo\")\n",
     )
 
   def testContribL1(self):
@@ -1112,6 +1116,12 @@ bazel-bin/tensorflow/tools/compatibility/update/generate_v2_reorders_map
     _, report, unused_errors, new_text = self._upgrade(text)
     self.assertEqual("optimizer.compute_gradients(a)\n", new_text)
     self.assertIn("Optimizer.compute_gradients no longer takes", report)
+
+  def testColocateGradientsWithHessians(self):
+    text = "tf.hessians(ys=a, xs=b, colocate_gradients_with_ops=False)\n"
+    _, report, unused_errors, new_text = self._upgrade(text)
+    self.assertEqual("tf.hessians(ys=a, xs=b)\n", new_text)
+    self.assertIn("tf.hessians no longer takes", report)
 
   def testExportSavedModelRename(self):
     text = "self.est.export_savedmodel(path)"
@@ -1593,12 +1603,13 @@ def _log_prob(self, x):
     self.assertEqual(expected_text, new_text)
 
   def testAssertStatements(self):
-    for name in ["assert_greater", "assert_equal", "assert_none_equal",
-                 "assert_less", "assert_negative", "assert_positive",
-                 "assert_non_negative", "assert_non_positive", "assert_near",
-                 "assert_less", "assert_less_equal", "assert_greater",
-                 "assert_greater_equal", "assert_integer", "assert_type",
-                 "assert_scalar"]:
+    for name in [
+        "assert_greater", "assert_equal", "assert_none_equal", "assert_less",
+        "assert_negative", "assert_positive", "assert_non_negative",
+        "assert_non_positive", "assert_near", "assert_less",
+        "assert_less_equal", "assert_greater", "assert_greater_equal",
+        "assert_scalar"
+    ]:
       text = "tf.%s(a)" % name
       expected_text = "tf.compat.v1.%s(a)" % name
       _, report, unused_errors, new_text = self._upgrade(text)
@@ -1634,6 +1645,12 @@ def _log_prob(self, x):
 
   def test_is_tensor_upgrade(self):
     text = "tf.contrib.framework.is_tensor(x)"
+    expected = "tf.is_tensor(x)"
+    _, _, _, new_text = self._upgrade(text)
+    self.assertEqual(expected, new_text)
+
+  def test_is_tensor_direct_import_upgrade(self):
+    text = "contrib_framework.is_tensor(x)"
     expected = "tf.is_tensor(x)"
     _, _, _, new_text = self._upgrade(text)
     self.assertEqual(expected, new_text)
@@ -1674,17 +1691,21 @@ def _log_prob(self, x):
     self.assertIn("tf.flags and tf.app.flags have been removed", errors[0])
 
   def test_contrib_estimator_head_deprecation(self):
-    api_symbols = ["binary_classification_head", "logistic_regression_head",
-                   "multi_class_head", "multi_head", "multi_label_head",
-                   "poisson_regression_head", "regression_head"]
-    for symbol in api_symbols:
-      text = "tf.contrib.estimator." + symbol
-      _, report, _, _ = self._upgrade(text)
-      self.assertIn("`tf.contrib.estimator.*_head` has been deprecated", report)
+    for contrib_alias in ["tf.contrib.", "contrib_"]:
+      api_symbols = ["binary_classification_head", "logistic_regression_head",
+                     "multi_class_head", "multi_head", "multi_label_head",
+                     "poisson_regression_head", "regression_head"]
+      for symbol in api_symbols:
+        text = contrib_alias + "estimator." + symbol
+        _, report, _, _ = self._upgrade(text)
+        self.assertIn("`tf.contrib.estimator.*_head` has been deprecated",
+                      report)
 
   def test_contrib_layers_layer_norm_deprecation(self):
-    _, report, _, _ = self._upgrade("tf.contrib.layers.layer_norm")
-    self.assertIn("`tf.contrib.layers.layer_norm` has been deprecated", report)
+    for contrib_alias in ["tf.contrib.", "contrib_"]:
+      _, report, _, _ = self._upgrade(contrib_alias + "layers.layer_norm")
+      self.assertIn(
+          "`tf.contrib.layers.layer_norm` has been deprecated", report)
 
   def test_contrib_rnn_deprecation(self):
     _, report, _, _ = self._upgrade("tf.contrib.rnn")
@@ -1701,15 +1722,17 @@ def _log_prob(self, x):
     self.assertEqual(expected_text, new_text)
 
   def test_contrib_estimator_early_stopping(self):
-    api_symbols = [
-        "make_early_stopping_hook", "stop_if_higher_hook", "stop_if_lower_hook",
-        "stop_if_no_decrease_hook", "stop_if_no_increase_hook"
-    ]
-    for symbol in api_symbols:
-      text = "tf.contrib.estimator." + symbol
-      expected_text = "tf.estimator.experimental." + symbol
-      _, _, _, new_text = self._upgrade(text)
-      self.assertEqual(expected_text, new_text)
+    for contrib_alias in ["tf.contrib.", "contrib_"]:
+      api_symbols = [
+          "make_early_stopping_hook", "stop_if_higher_hook",
+          "stop_if_lower_hook",
+          "stop_if_no_decrease_hook", "stop_if_no_increase_hook"
+      ]
+      for symbol in api_symbols:
+        text = contrib_alias + "estimator." + symbol
+        expected_text = "tf.estimator.experimental." + symbol
+        _, _, _, new_text = self._upgrade(text)
+        self.assertEqual(expected_text, new_text)
 
   def test_contrib_rnn_cell(self):
     api_symbols = ["RNNCell", "BasicLSTMCell", "BasicRNNCell", "GRUCell",
@@ -2138,7 +2161,7 @@ def _log_prob(self, x):
     expected = "tf.contrib.distribute.TPUStrategy"
     _, _, errors, new_text = self._upgrade(text)
     self.assertEqual(expected, new_text)
-    self.assertIn("migrated to tf.distribute.experimental.TPUStrategy",
+    self.assertIn("migrated to tf.distribute.TPUStrategy",
                   errors[0])
 
     text = "tf.contrib.distribute.foo"
@@ -2200,6 +2223,30 @@ def _log_prob(self, x):
                        "import tensorflow.compat.v2 as tf_v2\n")
     expected_text = expected_header + new_symbol
     _, _, _, new_text = self._upgrade(text, import_rename=True)
+    self.assertEqual(new_text, expected_text)
+
+    import_header = ("import tensorflow.compat.v1 as tf\n"
+                     "import tensorflow.compat.v1 as tf_v1\n"
+                     "import tensorflow.compat.v2 as tf_v2\n")
+    text = import_header + old_symbol
+    expected_header = ("import tensorflow.compat.v2 as tf\n"
+                       "import tensorflow.compat.v1 as tf_v1\n"
+                       "import tensorflow.compat.v2 as tf_v2\n")
+    expected_text = expected_header + new_symbol
+    _, _, _, new_text = self._upgrade(
+        text, import_rename=True, upgrade_compat_v1_import=True)
+    self.assertEqual(new_text, expected_text)
+
+    import_header = ("import tensorflow.compat.v1 as tf\n"
+                     "import tensorflow.compat.v1 as tf_v1\n"
+                     "import tensorflow.compat.v2 as tf_v2\n")
+    text = import_header + old_symbol
+    expected_header = ("import tensorflow as tf\n"
+                       "import tensorflow.compat.v1 as tf_v1\n"
+                       "import tensorflow.compat.v2 as tf_v2\n")
+    expected_text = expected_header + new_symbol
+    _, _, _, new_text = self._upgrade(
+        text, import_rename=False, upgrade_compat_v1_import=True)
     self.assertEqual(new_text, expected_text)
 
     import_header = "from tensorflow import foo\n"
@@ -2345,6 +2392,31 @@ class TestUpgradeFiles(test_util.TensorFlowTestCase):
     temp_file = tempfile.NamedTemporaryFile("w", delete=False)
     original = "tf.conj(a)\n"
     upgraded = "tf.math.conj(a)\n"
+    temp_file.write(original)
+    temp_file.close()
+    upgrader = ast_edits.ASTCodeUpgrader(tf_upgrade_v2.TFAPIChangeSpec())
+    upgrader.process_file(temp_file.name, temp_file.name)
+    self.assertAllEqual(open(temp_file.name).read(), upgraded)
+    os.unlink(temp_file.name)
+
+  def testInplaceNoOutputChangeOnErrorHandling(self):
+    """In place file should not be modified when parsing error is handled."""
+    temp_file = tempfile.NamedTemporaryFile("w", delete=False)
+    original = "print 'a' \n"
+    upgraded = "print 'a' \n"
+    temp_file.write(original)
+    temp_file.close()
+    upgrader = ast_edits.ASTCodeUpgrader(tf_upgrade_v2.TFAPIChangeSpec())
+    upgrader.process_file(
+        temp_file.name, temp_file.name, no_change_to_outfile_on_error=True)
+    self.assertAllEqual(open(temp_file.name).read(), upgraded)
+    os.unlink(temp_file.name)
+
+  def testInplaceEmptyOutputOnError(self):
+    """In place file becomes empty when parsing error is not handled."""
+    temp_file = tempfile.NamedTemporaryFile("w", delete=False)
+    original = "print 'a' \n"
+    upgraded = ""
     temp_file.write(original)
     temp_file.close()
     upgrader = ast_edits.ASTCodeUpgrader(tf_upgrade_v2.TFAPIChangeSpec())

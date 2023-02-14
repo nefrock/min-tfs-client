@@ -33,8 +33,8 @@ double GenerateUniformRandomNumberBetween(double a, double b) {
 
 }  // namespace
 
-int64 ComputeBackoffMicroseconds(int current_retry_attempt, int64 min_delay,
-                                 int64 max_delay) {
+int64_t ComputeBackoffMicroseconds(int current_retry_attempt, int64_t min_delay,
+                                   int64_t max_delay) {
   DCHECK_GE(current_retry_attempt, 0);
 
   // This function with the constants below is calculating:
@@ -67,7 +67,7 @@ int64 ComputeBackoffMicroseconds(int current_retry_attempt, int64 min_delay,
   second_term *=
       GenerateUniformRandomNumberBetween(1.0 - kBackoffRandMult, 1.0);
 
-  return std::max(static_cast<int64>(first_term + second_term), min_delay);
+  return std::max(static_cast<int64_t>(first_term + second_term), min_delay);
 }
 
 ::grpc::Status GrpcMaybeUnparseProto(const protobuf::Message& src,
@@ -114,7 +114,6 @@ bool GrpcMaybeParseProto(grpc::ByteBuffer* src, string* dst) {
   return true;
 }
 
-#ifdef USE_TSTRING
 // GrpcMaybeParseProto simply copies bytes into the tstring.
 bool GrpcMaybeParseProto(grpc::ByteBuffer* src, tstring* dst) {
   dst->clear();
@@ -128,6 +127,5 @@ bool GrpcMaybeParseProto(grpc::ByteBuffer* src, tstring* dst) {
   }
   return true;
 }
-#endif  // USE_TSTRING
 
 }  // namespace tensorflow

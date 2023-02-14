@@ -19,36 +19,44 @@ https://www.tensorflow.org/guide/saved_model#cli_to_inspect_and_execute_savedmod
 
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import argparse
-import collections
+import ast
 import os
 import re
 import sys
-import warnings
 
+from absl import app  # pylint: disable=unused-import
 import numpy as np
-from six import integer_types
 
 from tensorflow.core.example import example_pb2
 from tensorflow.core.framework import types_pb2
+from tensorflow.core.protobuf import config_pb2
 from tensorflow.python.client import session
 from tensorflow.python.debug.wrappers import local_cli_wrapper
+from tensorflow.python.eager import def_function
+from tensorflow.python.eager import function as defun
 from tensorflow.python.framework import meta_graph as meta_graph_lib
 from tensorflow.python.framework import ops as ops_lib
 from tensorflow.python.framework import tensor_spec
 from tensorflow.python.lib.io import file_io
-from tensorflow.python.platform import app  # pylint: disable=unused-import
+from tensorflow.python.platform import tf_logging as logging
 from tensorflow.python.saved_model import load
 from tensorflow.python.saved_model import loader
 from tensorflow.python.saved_model import save
+from tensorflow.python.saved_model import signature_constants
+from tensorflow.python.tools import saved_model_aot_compile
 from tensorflow.python.tools import saved_model_utils
+from tensorflow.python.tpu import tpu
+from tensorflow.python.util.compat import collections_abc
 
-# Set of ops to blacklist.
-_OP_BLACKLIST = set(['WriteFile', 'ReadFile', 'PrintV2'])
+
+_XLA_DEBUG_OPTIONS_URL = (
+    'https://github.com/tensorflow/tensorflow/blob/master/'
+    'tensorflow/compiler/xla/debug_options_flags.cc')
+
+
+# Set of ops to denylist.
+_OP_DENYLIST = set(['WriteFile', 'ReadFile', 'PrintV2'])
 
 
 def _show_tag_sets(saved_model_dir):
@@ -62,7 +70,7 @@ def _show_tag_sets(saved_model_dir):
   tag_sets = saved_model_utils.get_saved_model_tag_sets(saved_model_dir)
   print('The given SavedModel contains the following tag-sets:')
   for tag_set in sorted(tag_sets):
-    print(', '.join(sorted(tag_set)))
+    print('%r' % ', '.join(sorted(tag_set)))
 
 
 def _show_signature_def_map_keys(saved_model_dir, tag_set):
@@ -98,7 +106,14 @@ def _get_inputs_tensor_info_from_meta_graph_def(meta_graph_def,
 
   Returns:
     A dictionary that maps input tensor keys to TensorInfos.
+
+  Raises:
+    ValueError if `signature_def_key` is not found in the MetaGraphDef.
   """
+  if signature_def_key not in meta_graph_def.signature_def:
+    raise ValueError(
+        f'Could not find signature "{signature_def_key}". Please choose from: '
+        f'{", ".join(meta_graph_def.signature_def.keys())}')
   return meta_graph_def.signature_def[signature_def_key].inputs
 
 
@@ -175,21 +190,34 @@ def _show_defined_functions(saved_model_dir):
   with ops_lib.Graph().as_default():
     trackable_object = load.load(saved_model_dir)
 
-  print('\nDefined Functions:', end='')
-  functions = (
+  print('\nConcrete Functions:', end='')
+  children = list(
       save._AugmentedGraphView(trackable_object)  # pylint: disable=protected-access
-      .list_functions(trackable_object))
-  functions = sorted(functions.items(), key=lambda x: x[0])
-  for name, function in functions:
+      .list_children(trackable_object))
+  children = sorted(children, key=lambda x: x.name)
+  for name, child in children:
+    concrete_functions = []
+    if isinstance(child, defun.ConcreteFunction):
+      concrete_functions.append(child)
+    elif isinstance(child, def_function.Function):
+      concrete_functions.extend(
+          child._list_all_concrete_functions_for_serialization())  # pylint: disable=protected-access
+    else:
+      continue
     print('\n  Function Name: \'%s\'' % name)
-    concrete_functions = \
-        function._list_all_concrete_functions_for_serialization()  # pylint: disable=protected-access
     concrete_functions = sorted(concrete_functions, key=lambda x: x.name)
     for index, concrete_function in enumerate(concrete_functions, 1):
-      args, kwargs = concrete_function.structured_input_signature
-      print('    Option #%d' % index)
-      print('      Callable with:')
-      _print_args(args, indent=4)
+      args, kwargs = None, None
+      if concrete_function.structured_input_signature:
+        args, kwargs = concrete_function.structured_input_signature
+      elif concrete_function._arg_keywords:  # pylint: disable=protected-access
+        # For pure ConcreteFunctions we might have nothing better than
+        # _arg_keywords.
+        args = concrete_function._arg_keywords  # pylint: disable=protected-access
+      if args:
+        print('    Option #%d' % index)
+        print('      Callable with:')
+        _print_args(args, indent=4)
       if kwargs:
         _print_args(kwargs, 'Named Argument', indent=4)
 
@@ -215,9 +243,11 @@ def _print_args(arguments, argument_type='Argument', indent=0):
   for index, element in enumerate(arguments, 1):
     if indent == 4:
       in_print('%s #%d' % (argument_type, index))
-    if isinstance(element, tensor_spec.TensorSpec):
+    if isinstance(element, str):
+      in_print('  %s' % element)
+    elif isinstance(element, tensor_spec.TensorSpec):
       print((indent + 1) * '  ' + '%s: %s' % (element.name, repr(element)))
-    elif (isinstance(element, collections.Iterable) and
+    elif (isinstance(element, collections_abc.Iterable) and
           not isinstance(element, dict)):
       in_print('  DType: %s' % type(element).__name__)
       in_print('  Value: [', end='')
@@ -324,30 +354,45 @@ def get_signature_def_map(saved_model_dir, tag_set):
   return meta_graph.signature_def
 
 
-def scan_meta_graph_def(meta_graph_def):
-  """Scans meta_graph_def and reports if there are ops on blacklist.
+def _get_op_denylist_set(op_denylist):
+  # Note: Discard empty ops so that "" can mean the empty denylist set.
+  set_of_denylisted_ops = set([op for op in op_denylist.split(',') if op])
+  return set_of_denylisted_ops
 
-  Print ops if they are on black list, or print success if no blacklisted ops
+
+def scan_meta_graph_def(meta_graph_def, op_denylist):
+  """Scans meta_graph_def and reports if there are ops on denylist.
+
+  Print ops if they are on denylist, or print success if no denylisted ops
   found.
 
   Args:
     meta_graph_def: MetaGraphDef protocol buffer.
+    op_denylist: set of ops to scan for.
   """
-  all_ops_set = set(
+  ops_in_metagraph = set(
       meta_graph_lib.ops_used_by_graph_def(meta_graph_def.graph_def))
-  blacklisted_ops = _OP_BLACKLIST & all_ops_set
-  if blacklisted_ops:
+  denylisted_ops = op_denylist & ops_in_metagraph
+  if denylisted_ops:
     # TODO(yifeif): print more warnings
-    print('MetaGraph with tag set %s contains the following blacklisted ops:' %
-          meta_graph_def.meta_info_def.tags, blacklisted_ops)
+    print(
+        'MetaGraph with tag set %s contains the following denylisted ops:' %
+        meta_graph_def.meta_info_def.tags, denylisted_ops)
   else:
-    print('MetaGraph with tag set %s does not contain blacklisted ops.' %
-          meta_graph_def.meta_info_def.tags)
+    print(
+        'MetaGraph with tag set %s does not contain the default denylisted ops:'
+        % meta_graph_def.meta_info_def.tags, op_denylist)
 
 
-def run_saved_model_with_feed_dict(saved_model_dir, tag_set, signature_def_key,
-                                   input_tensor_key_feed_dict, outdir,
-                                   overwrite_flag, worker=None, init_tpu=False,
+def run_saved_model_with_feed_dict(saved_model_dir,
+                                   tag_set,
+                                   signature_def_key,
+                                   input_tensor_key_feed_dict,
+                                   outdir,
+                                   overwrite_flag,
+                                   worker=None,
+                                   init_tpu=False,
+                                   use_tfrt=False,
                                    tf_debug=False):
   """Runs SavedModel and fetch all outputs.
 
@@ -370,6 +415,7 @@ def run_saved_model_with_feed_dict(saved_model_dir, tag_set, signature_def_key,
         specification is a bns or gRPC path.
     init_tpu: If true, the TPU system will be initialized after the session
         is created.
+    use_tfrt: If true, TFRT session will be used.
     tf_debug: A boolean flag to use TensorFlow Debugger (TFDBG) to observe the
         intermediate Tensor values and runtime GraphDefs while running the
         SavedModel.
@@ -410,12 +456,17 @@ def run_saved_model_with_feed_dict(saved_model_dir, tag_set, signature_def_key,
       for tensor_key in output_tensor_keys_sorted
   ]
 
-  with session.Session(worker, graph=ops_lib.Graph()) as sess:
+  config = None
+  if use_tfrt:
+    logging.info('Using TFRT session.')
+    config = config_pb2.ConfigProto(
+        experimental=config_pb2.ConfigProto.Experimental(use_tfrt=True))
+  with session.Session(worker, graph=ops_lib.Graph(), config=config) as sess:
     if init_tpu:
       print('Initializing TPU System ...')
       # This is needed for freshly started worker, or if the job
       # restarts after a preemption.
-      sess.run(tf.contrib.tpu.initialize_system())
+      sess.run(tpu.initialize_system())
 
     loader.load(sess, tag_set.split(','), saved_model_dir)
 
@@ -493,7 +544,7 @@ def preprocess_inputs_arg_string(inputs_str):
   return input_dict
 
 
-def preprocess_input_exprs_arg_string(input_exprs_str):
+def preprocess_input_exprs_arg_string(input_exprs_str, safe=True):
   """Parses input arg into dictionary that maps input key to python expression.
 
   Parses input string in the format of 'input_key=<python expression>' into a
@@ -501,8 +552,10 @@ def preprocess_input_exprs_arg_string(input_exprs_str):
 
   Args:
     input_exprs_str: A string that specifies python expression for input keys.
-    Each input is separated by semicolon. For each input key:
+      Each input is separated by semicolon. For each input key:
         'input_key=<python expression>'
+    safe: Whether to evaluate the python expression as literals or allow
+      arbitrary calls (e.g. numpy usage).
 
   Returns:
     A dictionary that maps input keys to their values.
@@ -517,8 +570,15 @@ def preprocess_input_exprs_arg_string(input_exprs_str):
       raise RuntimeError('--input_exprs "%s" format is incorrect. Please follow'
                          '"<input_key>=<python expression>"' % input_exprs_str)
     input_key, expr = input_raw.split('=', 1)
-    # ast.literal_eval does not work with numpy expressions
-    input_dict[input_key] = eval(expr)  # pylint: disable=eval-used
+    if safe:
+      try:
+        input_dict[input_key] = ast.literal_eval(expr)
+      except:
+        raise RuntimeError(
+            f'Expression "{expr}" is not a valid python literal.')
+    else:
+      # ast.literal_eval does not work with numpy expressions
+      input_dict[input_key] = eval(expr)  # pylint: disable=eval-used
   return input_dict
 
 
@@ -566,8 +626,11 @@ def _create_example_string(example_dict):
           feature_list)
     elif isinstance(feature_list[0], str):
       example.features.feature[feature_name].bytes_list.value.extend(
+          [f.encode('utf8') for f in feature_list])
+    elif isinstance(feature_list[0], bytes):
+      example.features.feature[feature_name].bytes_list.value.extend(
           feature_list)
-    elif isinstance(feature_list[0], integer_types):
+    elif isinstance(feature_list[0], int):
       example.features.feature[feature_name].int64_list.value.extend(
           feature_list)
     else:
@@ -632,13 +695,13 @@ def load_inputs_from_input_arg_string(inputs_str, input_exprs_str,
   input_examples = preprocess_input_examples_arg_string(input_examples_str)
 
   for input_tensor_key, (filename, variable_name) in inputs.items():
-    data = np.load(file_io.FileIO(filename, mode='rb'), allow_pickle=True)
+    data = np.load(file_io.FileIO(filename, mode='rb'), allow_pickle=True)  # pylint: disable=unexpected-keyword-arg
 
     # When a variable_name key is specified for the input file
     if variable_name:
       # if file contains a single ndarray, ignore the input name
       if isinstance(data, np.ndarray):
-        warnings.warn(
+        logging.warn(
             'Input file %s contains a single ndarray. Name key \"%s\" ignored.'
             % (filename, variable_name))
         tensor_key_feed_dict[input_tensor_key] = data
@@ -665,7 +728,7 @@ def load_inputs_from_input_arg_string(inputs_str, input_exprs_str,
   # When input is a python expression:
   for input_tensor_key, py_expr_evaluated in input_exprs.items():
     if input_tensor_key in tensor_key_feed_dict:
-      warnings.warn(
+      logging.warn(
           'input_key %s has been specified with both --inputs and --input_exprs'
           ' options. Value in --input_exprs will be used.' % input_tensor_key)
     tensor_key_feed_dict[input_tensor_key] = py_expr_evaluated
@@ -673,7 +736,7 @@ def load_inputs_from_input_arg_string(inputs_str, input_exprs_str,
   # When input is a tf.Example:
   for input_tensor_key, example in input_examples.items():
     if input_tensor_key in tensor_key_feed_dict:
-      warnings.warn(
+      logging.warn(
           'input_key %s has been specified in multiple options. Value in '
           '--input_examples will be used.' % input_tensor_key)
     tensor_key_feed_dict[input_tensor_key] = example
@@ -690,7 +753,7 @@ def show(args):
   if args.all:
     _show_all(args.dir)
   else:
-    # If no tag is specified, display all tag_set, if no signaure_def key is
+    # If no tag is specified, display all tag_set, if no signature_def key is
     # specified, display all SignatureDef keys, else show input output tensor
     # information corresponding to the given SignatureDef key
     if args.tag_set is None:
@@ -718,10 +781,17 @@ def run(args):
         'required')
   tensor_key_feed_dict = load_inputs_from_input_arg_string(
       args.inputs, args.input_exprs, args.input_examples)
-  run_saved_model_with_feed_dict(args.dir, args.tag_set, args.signature_def,
-                                 tensor_key_feed_dict, args.outdir,
-                                 args.overwrite, worker=args.worker,
-                                 init_tpu=args.init_tpu, tf_debug=args.tf_debug)
+  run_saved_model_with_feed_dict(
+      args.dir,
+      args.tag_set,
+      args.signature_def,
+      tensor_key_feed_dict,
+      args.outdir,
+      args.overwrite,
+      worker=args.worker,
+      init_tpu=args.init_tpu,
+      use_tfrt=args.use_tfrt,
+      tf_debug=args.tf_debug)
 
 
 def scan(args):
@@ -730,13 +800,23 @@ def scan(args):
   Args:
     args: A namespace parsed from command line.
   """
-  if args.tag_set:
+  if args.tag_set and args.op_denylist:
     scan_meta_graph_def(
-        saved_model_utils.get_meta_graph_def(args.dir, args.tag_set))
+        saved_model_utils.get_meta_graph_def(args.dir, args.tag_set),
+        _get_op_denylist_set(args.op_denylist))
+  elif args.tag_set:
+    scan_meta_graph_def(
+        saved_model_utils.get_meta_graph_def(args.dir, args.tag_set),
+        _OP_DENYLIST)
   else:
     saved_model = saved_model_utils.read_saved_model(args.dir)
-    for meta_graph_def in saved_model.meta_graphs:
-      scan_meta_graph_def(meta_graph_def)
+    if args.op_denylist:
+      for meta_graph_def in saved_model.meta_graphs:
+        scan_meta_graph_def(meta_graph_def,
+                            _get_op_denylist_set(args.op_denylist))
+    else:
+      for meta_graph_def in saved_model.meta_graphs:
+        scan_meta_graph_def(meta_graph_def, _OP_DENYLIST)
 
 
 def convert_with_tensorrt(args):
@@ -747,34 +827,93 @@ def convert_with_tensorrt(args):
   """
   # Import here instead of at top, because this will crash if TensorRT is
   # not installed
-  from tensorflow.contrib import tensorrt  # pylint: disable=g-import-not-at-top
-  tensorrt.create_inference_graph(
-      None,
-      None,
-      max_batch_size=args.max_batch_size,
-      max_workspace_size_bytes=args.max_workspace_size_bytes,
-      precision_mode=args.precision_mode,
-      minimum_segment_size=args.minimum_segment_size,
-      is_dynamic_op=args.is_dynamic_op,
-      input_saved_model_dir=args.dir,
-      input_saved_model_tags=args.tag_set.split(','),
-      output_saved_model_dir=args.output_dir)
+  from tensorflow.python.compiler.tensorrt import trt_convert as trt  # pylint: disable=g-import-not-at-top
+
+  if not args.convert_tf1_model:
+    params = trt.DEFAULT_TRT_CONVERSION_PARAMS._replace(
+        max_workspace_size_bytes=args.max_workspace_size_bytes,
+        precision_mode=args.precision_mode,
+        minimum_segment_size=args.minimum_segment_size)
+    try:
+      converter = trt.TrtGraphConverterV2(
+          input_saved_model_dir=args.dir,
+          input_saved_model_tags=args.tag_set.split(','),
+          **params._asdict())
+      converter.convert()
+    except Exception as e:
+      raise RuntimeError(
+          '{}. Try passing "--convert_tf1_model=True".'.format(e))
+    converter.save(output_saved_model_dir=args.output_dir)
+  else:
+    trt.create_inference_graph(
+        None,
+        None,
+        max_batch_size=1,
+        max_workspace_size_bytes=args.max_workspace_size_bytes,
+        precision_mode=args.precision_mode,
+        minimum_segment_size=args.minimum_segment_size,
+        is_dynamic_op=True,
+        input_saved_model_dir=args.dir,
+        input_saved_model_tags=args.tag_set.split(','),
+        output_saved_model_dir=args.output_dir)
 
 
-def create_parser():
-  """Creates a parser that parse the command line arguments.
+def freeze_model(args):
+  """Function triggered by freeze_model command.
 
-  Returns:
-    A namespace parsed from command line arguments.
+  Args:
+    args: A namespace parsed from command line.
   """
-  parser = argparse.ArgumentParser(
-      description='saved_model_cli: Command-line interface for SavedModel')
-  parser.add_argument('-v', '--version', action='version', version='0.1.0')
+  checkpoint_path = (
+      args.checkpoint_path
+      or os.path.join(args.dir, 'variables/variables'))
+  if not args.variables_to_feed:
+    variables_to_feed = []
+  elif args.variables_to_feed.lower() == 'all':
+    variables_to_feed = None  # We will identify them after.
+  else:
+    variables_to_feed = args.variables_to_feed.split(',')
 
-  subparsers = parser.add_subparsers(
-      title='commands', description='valid commands', help='additional help')
+  saved_model_aot_compile.freeze_model(
+      checkpoint_path=checkpoint_path,
+      meta_graph_def=saved_model_utils.get_meta_graph_def(
+          args.dir, args.tag_set),
+      signature_def_key=args.signature_def_key,
+      variables_to_feed=variables_to_feed,
+      output_prefix=args.output_prefix)
 
-  # show command
+
+def aot_compile_cpu(args):
+  """Function triggered by aot_compile_cpu command.
+
+  Args:
+    args: A namespace parsed from command line.
+  """
+  checkpoint_path = (
+      args.checkpoint_path
+      or os.path.join(args.dir, 'variables/variables'))
+  if not args.variables_to_feed:
+    variables_to_feed = []
+  elif args.variables_to_feed.lower() == 'all':
+    variables_to_feed = None  # We will identify them after.
+  else:
+    variables_to_feed = args.variables_to_feed.split(',')
+
+  saved_model_aot_compile.aot_compile_cpu_meta_graph_def(
+      checkpoint_path=checkpoint_path,
+      meta_graph_def=saved_model_utils.get_meta_graph_def(
+          args.dir, args.tag_set),
+      signature_def_key=args.signature_def_key,
+      variables_to_feed=variables_to_feed,
+      output_prefix=args.output_prefix,
+      target_triple=args.target_triple,
+      target_cpu=args.target_cpu,
+      cpp_class=args.cpp_class,
+      multithreading=args.multithreading.lower() not in ('f', 'false', '0'))
+
+
+def add_show_subparser(subparsers):
+  """Add parser for `show`."""
   show_msg = (
       'Usage examples:\n'
       'To show all tag-sets in a SavedModel:\n'
@@ -818,7 +957,9 @@ def create_parser():
       help='key of SignatureDef to display input(s) and output(s) for')
   parser_show.set_defaults(func=show)
 
-  # run command
+
+def add_run_subparser(subparsers):
+  """Add parser for `run`."""
   run_msg = ('Usage example:\n'
              'To run input tensors from files through a MetaGraphDef and save'
              ' the output tensors to files:\n'
@@ -856,8 +997,10 @@ def create_parser():
   parser_run.add_argument('--inputs', type=str, default='', help=msg)
   msg = ('Specifying inputs by python expressions, in the format of'
          ' "<input_key>=\'<python expression>\'", separated by \';\'. '
-         'numpy module is available as \'np\'. '
-         'Will override duplicate input keys from --inputs option.')
+         'numpy module is available as \'np\'. Please note that the expression '
+         'will be evaluated as-is, and is susceptible to code injection. '
+         'When this is set, the value will override duplicate input keys from '
+         '--inputs option.')
   parser_run.add_argument('--input_exprs', type=str, default='', help=msg)
   msg = (
       'Specifying tf.Example inputs as list of dictionaries. For example: '
@@ -892,12 +1035,22 @@ def create_parser():
       default=None,
       help='if specified, tpu.initialize_system will be called on the Session. '
            'This option should be only used if the worker is a TPU job.')
+  parser_run.add_argument(
+      '--use_tfrt',
+      action='store_true',
+      default=None,
+      help='if specified, TFRT session will be used, instead of TF1 session.')
   parser_run.set_defaults(func=run)
 
-  # scan command
+
+def add_scan_subparser(subparsers):
+  """Add parser for `scan`."""
   scan_msg = ('Usage example:\n'
-              'To scan for blacklisted ops in SavedModel:\n'
+              'To scan for default denylisted ops in SavedModel:\n'
               '$saved_model_cli scan --dir /tmp/saved_model\n'
+              'To scan for a specific set of ops in SavedModel:\n'
+              '$saved_model_cli scan --dir /tmp/saved_model --op_denylist '
+              'OpName,OpName,OpName\n'
               'To scan a specific MetaGraph, pass in --tag_set\n')
   parser_scan = subparsers.add_parser(
       'scan',
@@ -912,9 +1065,17 @@ def create_parser():
       '--tag_set',
       type=str,
       help='tag-set of graph in SavedModel to scan, separated by \',\'')
+  parser_scan.add_argument(
+      '--op_denylist',
+      type=str,
+      help=('list of ops to detect and report, separated by \',\'. If not set, '
+            'default is WriteFile,ReadFile,PrintV2. For empty list, pass in '
+            '\'\''))
   parser_scan.set_defaults(func=scan)
 
-  # convert command
+
+def add_convert_subparser(subparsers):
+  """Add parser for `convert`."""
   convert_msg = ('Usage example:\n'
                  'To convert the SavedModel to one that have TensorRT ops:\n'
                  '$saved_model_cli convert \\\n'
@@ -950,11 +1111,6 @@ def create_parser():
       description='Convert the SavedModel with Tensorflow-TensorRT integration',
       formatter_class=argparse.RawTextHelpFormatter)
   parser_convert_with_tensorrt.add_argument(
-      '--max_batch_size',
-      type=int,
-      default=1,
-      help='max size for the input batch')
-  parser_convert_with_tensorrt.add_argument(
       '--max_workspace_size_bytes',
       type=int,
       default=2 << 20,
@@ -972,17 +1128,182 @@ def create_parser():
       help=('the minimum number of nodes required for a subgraph to be replaced'
             'in a TensorRT node'))
   parser_convert_with_tensorrt.add_argument(
-      '--is_dynamic_op',
+      '--convert_tf1_model',
       type=bool,
       default=False,
-      help=('whether to generate dynamic TRT ops which will build the TRT '
-            'network and engine at run time'))
+      help='support TRT conversion for TF1 models')
   parser_convert_with_tensorrt.set_defaults(func=convert_with_tensorrt)
 
+
+def _parse_common_freeze_and_aot(parser_compile):
+  """Parse arguments shared by freeze model and aot_compile."""
+  parser_compile.add_argument(
+      '--dir',
+      type=str,
+      required=True,
+      help='directory containing the SavedModel to convert')
+  parser_compile.add_argument(
+      '--output_prefix',
+      type=str,
+      required=True,
+      help=('output directory + filename prefix for the resulting header(s) '
+            'and object file(s)'))
+  parser_compile.add_argument(
+      '--tag_set',
+      type=str,
+      required=True,
+      help='tag-set of graph in SavedModel to convert, separated by \',\'')
+  parser_compile.add_argument(
+      '--signature_def_key',
+      type=str,
+      default=signature_constants.DEFAULT_SERVING_SIGNATURE_DEF_KEY,
+      help=('signature_def key to use.  '
+            'default: DEFAULT_SERVING_SIGNATURE_DEF_KEY'))
+  parser_compile.add_argument(
+      '--checkpoint_path',
+      type=str,
+      default=None,
+      help='Custom checkpoint to use (default: use the SavedModel variables)')
+  parser_compile.add_argument(
+      '--variables_to_feed',
+      type=str,
+      default='',
+      help=('The names of variables that will be fed into the network.  '
+            'Options are: empty (default; all variables are frozen, none may '
+            'be fed), \'all\' (all variables may be fed), or a '
+            'comma-delimited list of names of variables that may be fed.  In '
+            'the last case, the non-fed variables will be frozen in the graph.'
+            '**NOTE** Any variables passed to `variables_to_feed` *must be set '
+            'by the user*.  These variables will NOT be frozen and their '
+            'values will be uninitialized in the compiled object '
+            '(this applies to all input arguments from the signature as '
+            'well).'))
+
+
+def add_freeze_model_subparser(subparsers):
+  """Add parser for `freeze_model`."""
+  compile_msg = '\n'.join(
+      ['Usage example:',
+       'To freeze a SavedModel in preparation for tfcompile:',
+       '$saved_model_cli freeze_model \\',
+       '   --dir /tmp/saved_model \\',
+       '   --tag_set serve \\',
+       '   --output_prefix /tmp/saved_model_xla_aot',
+      ])
+
+  parser_compile = subparsers.add_parser(
+      'freeze_model',
+      description=compile_msg,
+      formatter_class=argparse.RawTextHelpFormatter)
+  _parse_common_freeze_and_aot(parser_compile)
+  parser_compile.set_defaults(func=freeze_model)
+
+
+def add_aot_compile_cpu_subparser(subparsers):
+  """Add parser for `aot_compile_cpu`."""
+  compile_msg = '\n'.join(
+      ['Usage example:',
+       'To compile a SavedModel signature via (CPU) XLA AOT:',
+       '$saved_model_cli aot_compile_cpu \\',
+       '   --dir /tmp/saved_model \\',
+       '   --tag_set serve \\',
+       '   --output_dir /tmp/saved_model_xla_aot',
+       '', '',
+       'Note: Additional XLA compilation options are available by setting the ',
+       'XLA_FLAGS environment variable.  See the XLA debug options flags for ',
+       'all the options: ',
+       '  {}'.format(_XLA_DEBUG_OPTIONS_URL),
+       '',
+       'For example, to disable XLA fast math when compiling:',
+       '',
+       'XLA_FLAGS="--xla_cpu_enable_fast_math=false" $saved_model_cli '
+       'aot_compile_cpu ...',
+       '',
+       'Some possibly useful flags:',
+       '  --xla_cpu_enable_fast_math=false',
+       '  --xla_force_host_platform_device_count=<num threads>',
+       '    (useful in conjunction with disabling multi threading)'
+      ])
+
+  parser_compile = subparsers.add_parser(
+      'aot_compile_cpu',
+      description=compile_msg,
+      formatter_class=argparse.RawTextHelpFormatter)
+  _parse_common_freeze_and_aot(parser_compile)
+  parser_compile.add_argument(
+      '--target_triple',
+      type=str,
+      default='x86_64-pc-linux',
+      help=('Target triple for LLVM during AOT compilation.  Examples: '
+            'x86_64-none-darwin, x86_64-apple-ios, arm64-none-ios, '
+            'armv7-none-android.  More examples are available in tfcompile.bzl '
+            'in the tensorflow codebase.'))
+  parser_compile.add_argument(
+      '--target_cpu',
+      type=str,
+      default='',
+      help=('Target cpu name for LLVM during AOT compilation.  Examples: '
+            'x86_64, skylake, haswell, westmere, <empty> (unknown).  For '
+            'a complete list of options, run (for x86 targets): '
+            '`llc -march=x86 -mcpu=help`'))
+  parser_compile.add_argument(
+      '--cpp_class',
+      type=str,
+      required=True,
+      help=('The name of the generated C++ class, wrapping the generated '
+            'function.  The syntax of this flag is '
+            '[[<optional_namespace>::],...]<class_name>.  This mirrors the '
+            'C++ syntax for referring to a class, where multiple namespaces '
+            'may precede the class name, separated by double-colons.  '
+            'The class will be generated in the given namespace(s), or if no '
+            'namespaces are given, within the global namespace.'))
+  parser_compile.add_argument(
+      '--multithreading',
+      type=str,
+      default='False',
+      help=('Enable multithreading in the compiled computation.  '
+            'Note that if using this option, the resulting object files '
+            'may have external dependencies on multithreading libraries '
+            'like nsync.'))
+
+  parser_compile.set_defaults(func=aot_compile_cpu)
+
+
+def create_parser():
+  """Creates a parser that parse the command line arguments.
+
+  Returns:
+    A namespace parsed from command line arguments.
+  """
+  parser = argparse.ArgumentParser(
+      description='saved_model_cli: Command-line interface for SavedModel')
+  parser.add_argument('-v', '--version', action='version', version='0.1.0')
+
+  subparsers = parser.add_subparsers(
+      title='commands', description='valid commands', help='additional help')
+
+  # show command
+  add_show_subparser(subparsers)
+
+  # run command
+  add_run_subparser(subparsers)
+
+  # scan command
+  add_scan_subparser(subparsers)
+
+  # tensorrt convert command
+  add_convert_subparser(subparsers)
+
+  # aot_compile_cpu command
+  add_aot_compile_cpu_subparser(subparsers)
+
+  # freeze_model command
+  add_freeze_model_subparser(subparsers)
   return parser
 
 
 def main():
+  logging.set_verbosity(logging.INFO)
   parser = create_parser()
   args = parser.parse_args()
   if not hasattr(args, 'func'):

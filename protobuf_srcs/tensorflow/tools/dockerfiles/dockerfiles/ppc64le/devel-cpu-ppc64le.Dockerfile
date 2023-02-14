@@ -1,4 +1,4 @@
-# Copyright 2018 The TensorFlow Authors. All Rights Reserved.
+# Copyright 2019 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,12 +19,14 @@
 # throughout. Please refer to the TensorFlow dockerfiles documentation
 # for more information.
 
-ARG UBUNTU_VERSION=18.04
+ARG UBUNTU_VERSION=20.04
 
 FROM ubuntu:${UBUNTU_VERSION} AS base
 
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
+        clang-format \
         curl \
         git \
         libcurl3-dev \
@@ -34,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         pkg-config \
         rsync \
         software-properties-common \
-	sudo \
+        sudo \
         unzip \
         zip \
         zlib1g-dev \
@@ -52,62 +54,51 @@ ARG CACHE_STOP=1
 ARG CHECKOUT_TF_SRC=0
 # In case of Python 2.7+ we need to add passwd entries for user and group id
 RUN chmod a+w /etc/passwd /etc/group
-RUN test "${CHECKOUT_TF_SRC}" -eq 1 && git clone https://github.com/tensorflow/tensorflow.git /tensorflow_src || true
-
-ARG USE_PYTHON_3_NOT_2
-ARG _PY_SUFFIX=${USE_PYTHON_3_NOT_2:+3}
-ARG PYTHON=python${_PY_SUFFIX}
-ARG PIP=pip${_PY_SUFFIX}
+RUN test "${CHECKOUT_TF_SRC}" -eq 1 && git clone --depth=1 https://github.com/tensorflow/tensorflow.git /tensorflow_src || true
 
 # See http://bugs.python.org/issue19846
 ENV LANG C.UTF-8
 
 RUN apt-get update && apt-get install -y \
-    ${PYTHON} \
-    ${PYTHON}-pip
+    python3 \
+    python3-pip
 
-RUN ${PIP} --no-cache-dir install --upgrade \
-    pip \
+RUN python3 -m pip --no-cache-dir install --upgrade \
+    "pip<20.3" \
     setuptools
 
 # Some TF tools expect a "python" binary
-RUN ln -s $(which ${PYTHON}) /usr/local/bin/python 
+RUN ln -s $(which python3) /usr/local/bin/python
 
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     git \
     openjdk-8-jdk \
-    ${PYTHON}-dev \
+    python3-dev \
     virtualenv \
     swig
 
-RUN ${PIP} --no-cache-dir install \
+RUN python3 -m pip --no-cache-dir install \
     Pillow \
     h5py \
-    keras_applications \
-    keras_preprocessing \
+    tb-nightly \
     matplotlib \
     mock \
-    numpy \
+    'numpy<1.19.0' \
     scipy \
     sklearn \
     pandas \
     portpicker \
-    && test "${USE_PYTHON_3_NOT_2}" -eq 1 && true || ${PIP} --no-cache-dir install \
     enum34
 
- # Build and install bazel
-ENV BAZEL_VERSION 0.15.0
-WORKDIR /
+# Installs bazelisk
 RUN mkdir /bazel && \
-    cd /bazel && \
-    curl -fSsL -O https://github.com/bazelbuild/bazel/releases/download/$BAZEL_VERSION/bazel-$BAZEL_VERSION-dist.zip && \
-    unzip bazel-$BAZEL_VERSION-dist.zip && \
-    bash ./compile.sh && \
-    cp output/bazel /usr/local/bin/ && \
-    rm -rf /bazel && \
-    cd -
+    curl -fSsL -o /bazel/LICENSE.txt "https://raw.githubusercontent.com/bazelbuild/bazel/master/LICENSE" && \
+    mkdir /bazelisk && \
+    curl -fSsL -o /bazelisk/LICENSE.txt "https://raw.githubusercontent.com/bazelbuild/bazelisk/master/LICENSE" && \
+    curl -fSsL -o /usr/bin/bazel "https://github.com/bazelbuild/bazelisk/releases/download/v1.11.0/bazelisk-linux-amd64" && \
+    chmod +x /usr/bin/bazel
 
 COPY bashrc /etc/bash.bashrc
 RUN chmod a+rwx /etc/bash.bashrc

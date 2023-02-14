@@ -3,33 +3,28 @@ RUN apt-get update && apt-get install -y \
     curl \
     git \
     openjdk-8-jdk \
-    ${PYTHON}-dev \
+    python3-dev \
     virtualenv \
     swig
 
-RUN ${PIP} --no-cache-dir install \
+RUN python3 -m pip --no-cache-dir install \
     Pillow \
     h5py \
-    keras_applications \
     keras_preprocessing \
+    tb-nightly \
     matplotlib \
     mock \
-    numpy \
+    'numpy<1.19.0' \
     scipy \
     sklearn \
     pandas \
     portpicker \
-    && test "${USE_PYTHON_3_NOT_2}" -eq 1 && true || ${PIP} --no-cache-dir install \
     enum34
 
- # Build and install bazel
-ENV BAZEL_VERSION 0.15.0
-WORKDIR /
+# Installs bazelisk
 RUN mkdir /bazel && \
-    cd /bazel && \
-    curl -fSsL -O https://github.com/bazelbuild/bazel/releases/download/$BAZEL_VERSION/bazel-$BAZEL_VERSION-dist.zip && \
-    unzip bazel-$BAZEL_VERSION-dist.zip && \
-    bash ./compile.sh && \
-    cp output/bazel /usr/local/bin/ && \
-    rm -rf /bazel && \
-    cd -
+    curl -fSsL -o /bazel/LICENSE.txt "https://raw.githubusercontent.com/bazelbuild/bazel/master/LICENSE" && \
+    mkdir /bazelisk && \
+    curl -fSsL -o /bazelisk/LICENSE.txt "https://raw.githubusercontent.com/bazelbuild/bazelisk/master/LICENSE" && \
+    curl -fSsL -o /usr/bin/bazel "https://github.com/bazelbuild/bazelisk/releases/download/v1.11.0/bazelisk-linux-amd64" && \
+    chmod +x /usr/bin/bazel
