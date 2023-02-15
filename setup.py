@@ -10,9 +10,12 @@ from setuptools import find_namespace_packages, setup
 from setuptools.command.build_py import build_py
 
 ROOT_DIR = Path(os.path.dirname(os.path.realpath(__file__)))
-PROTOBUF_INCLUDE_PATH = ROOT_DIR / "protobuf_srcs/"
+PROTOBUF_TF_INCLUDE_PATH = ROOT_DIR / "protobuf_srcs/"
+PROTOBUF_TFS_INCLUDE_PATH = ROOT_DIR / "protobuf_srcs/tensorflow_serving/"
 OUTPUT_PATH = ROOT_DIR / "tensor_serving_client/"
-PROTO_PATHS = [str(p) for p in PROTOBUF_INCLUDE_PATH.rglob("*.proto")]
+PROTO_TF_PATHS = [str(p) for p in PROTOBUF_TF_INCLUDE_PATH.rglob("*.proto")]
+PROTO_TFS_PATHS = [str(p) for p in PROTOBUF_TFS_INCLUDE_PATH.rglob("*.proto")]
+PROTO_TF_PATHS = [p for p in PROTO_TF_PATHS if p not in PROTO_TFS_PATHS]
 
 
 @contextmanager
@@ -41,11 +44,24 @@ class CompileProtobufs(Command):
     def run(self) -> None:
         pb_compile_command = [
             "protoc",
-            f"-I={str(PROTOBUF_INCLUDE_PATH)}",
+            f"-I={str(PROTOBUF_TF_INCLUDE_PATH)}",
             f"--python_out={str(OUTPUT_PATH)}",
         ]
-        with cd(str(PROTOBUF_INCLUDE_PATH)):
-            for proto_path in PROTO_PATHS:
+        with cd(str(PROTOBUF_TF_INCLUDE_PATH)):
+            for proto_path in PROTO_TF_PATHS:
+                check_output(pb_compile_command + [proto_path])
+        pb_compile_command = [
+            "protoc",
+            f"-I={str(PROTOBUF_TF_INCLUDE_PATH)}",
+            f"-I={str(PROTOBUF_TFS_INCLUDE_PATH)}",
+            f"--python_out={str(OUTPUT_PATH)}",
+        ]
+        with cd(str(PROTOBUF_TFS_INCLUDE_PATH)):
+            for proto_path in PROTO_TFS_PATHS:
+                # Necessary because directory structure of tensorflow_serving
+                # repository is different now, with a nested tensorflow_serving
+                # directory.
+                proto_path = Path(proto_path).relative_to(PROTOBUF_TFS_INCLUDE_PATH)
                 check_output(pb_compile_command + [proto_path])
 
 
@@ -63,10 +79,10 @@ class CopyGRPCStubs(Command):
 
     def run(self):
         predict_service_stub = (
-            PROTOBUF_INCLUDE_PATH / "tensorflow_serving/apis/prediction_service_pb2_grpc.py"
+            PROTOBUF_TFS_INCLUDE_PATH / "tensorflow_serving/apis/prediction_service_pb2_grpc.py"
         )
         model_service_stub = (
-            PROTOBUF_INCLUDE_PATH / "tensorflow_serving/apis/model_service_pb2_grpc.py"
+            PROTOBUF_TFS_INCLUDE_PATH / "tensorflow_serving/apis/model_service_pb2_grpc.py"
         )
         destination = ROOT_DIR / "tensor_serving_client/tensorflow_serving/apis/"
         copy2(predict_service_stub, destination)
@@ -99,7 +115,11 @@ setup(
     },
     package_dir={"": "tensor_serving_client"},
     packages=find_namespace_packages(where="tensor_serving_client"),
-    install_requires=["grpcio>=1.21", "protobuf>=3.8", "numpy>=1.16.4"],
+    install_requires=[
+        "grpcio>=1.24.3, <2.0",
+        "protobuf>=3.9.2, <3.20",
+        "numpy>=1.20"
+    ],
     tests_require=["pytest"],
     extras_require={"dev": ["black==19.10b0", "flake8", "mypy", "pytest"]},
 )
