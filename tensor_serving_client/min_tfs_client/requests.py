@@ -1,4 +1,4 @@
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Tuple
 
 import grpc
 import numpy as np
@@ -22,12 +22,13 @@ ResponseTypes = Union[PredictResponse, ClassificationResponse, RegressionRespons
 class TensorServingClient:
     def __init__(
         self, host: str, port: int, credentials: Optional[grpc.ssl_channel_credentials] = None,
+        options: Optional[List[Tuple[str, Union[str, float]]]] = None,
     ) -> None:
         self._host_address = f"{host}:{port}"
         if credentials:
-            self._channel = grpc.secure_channel(self._host_address, credentials)
+            self._channel = grpc.secure_channel(self._host_address, credentials, options=options)
         else:
-            self._channel = grpc.insecure_channel(self._host_address)
+            self._channel = grpc.insecure_channel(self._host_address, options=options)
 
     def _make_inference_request(
         self,
