@@ -15,12 +15,9 @@ pip install min-tfs-client
 ```
 
 ## Installing from source
-Installation from source will require the protobuf compiler `protoc` to be installed and available to the command line (e.g. via the `PATH` environment variable). The protobuf compiler can be downloaded from the [protocolbuffers/protobuf](https://github.com/protocolbuffers/protobuf/releases) Github repo. Once `protoc` is installed and available, you can run:
-
 ```Bash
 git clone https://github.com/zendesk/min-tfs-client.git
 cd min-tfs-client
-python setup.py compile_pb copy_grpc
 pip install .
 ```
 
